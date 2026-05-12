@@ -15,8 +15,8 @@ Phase 3 is implemented as non-invasive detection adapters:
 
 ## Next real-integration questions for 형
 
-1. Which machine has Ansys Lumerical installed and licensed?
-2. Is the intended first real adapter `ansys-lumerical-core` or direct `lumapi`?
+1. Which company local-network machine has Ansys Lumerical installed and licensed?
+2. Use `ansys-lumerical-core` as the first real adapter path; use direct `lumapi` only as fallback if core cannot inspect/run the required workflows.
 3. Can we use a non-sensitive sample `.fsp` for the first integration test?
 4. Should real integration run with GUI hidden/headless or visible first for safety?
 
