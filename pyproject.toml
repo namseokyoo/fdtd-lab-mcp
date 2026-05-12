@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "fdtd-lab-mcp"
+version = "0.1.0"
+description = "FDTD Experiment Agent MCP for safe Lumerical workflows"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["mcp>=1.27.0"]
+
+[project.optional-dependencies]
+test = ["pytest"]
+plot = ["matplotlib"]
+
+[project.scripts]
+fdtd-lab-mcp = "fdtd_lab_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/fdtd_lab_mcp"]
+
+[tool.pytest.ini_options]
+markers = ["lumerical: requires a local Ansys Lumerical installation/license"]
+testpaths = ["tests"]
