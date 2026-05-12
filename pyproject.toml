@@ -13,6 +13,7 @@ dependencies = ["mcp>=1.27.0"]
 [project.optional-dependencies]
 test = ["pytest"]
 plot = ["matplotlib"]
+lumerical = ["ansys-lumerical-core>=0.2.0"]
 
 [project.scripts]
 fdtd-lab-mcp = "fdtd_lab_mcp.server:main"

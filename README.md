@@ -8,6 +8,25 @@ FDTD Experiment Agent MCP for safe Ansys Lumerical `.fsp` workflows. The intende
 python -m pytest
 ```
 
+## Real integration probe
+
+Company local-network Lumerical validation is documented in `docs/company-local-integration.md`.
+
+Detection-only examples:
+
+```bash
+python -m fdtd_lab_mcp.integration_probe --adapter ansys_core
+python -m fdtd_lab_mcp.integration_probe --adapter lumapi
+```
+
+Real open/list requires an explicit safety gate and a non-sensitive sample `.fsp`:
+
+```bash
+export FDTD_LAB_ENABLE_REAL_LUMERICAL=1
+export FDTD_LAB_SAMPLE_FSP=/path/to/non-sensitive-sample.fsp
+python -m fdtd_lab_mcp.integration_probe --adapter ansys_core --open --list
+```
+
 ## MCP server
 
 ```bash
