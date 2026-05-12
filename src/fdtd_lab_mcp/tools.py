@@ -1,4 +1,5 @@
 from __future__ import annotations
+import os
 from pathlib import Path
 from typing import Any
 from fdtd_lab_mcp.adapters import make_adapter
@@ -10,14 +11,27 @@ from fdtd_lab_mcp.reporting.csv_export import export_monitor_csv
 from fdtd_lab_mcp.reporting.summary import generate_summary
 from fdtd_lab_mcp.safety.run_manager import RunManager, sha256_file
 
-_ADAPTER = FakeLumericalAdapter()
+DEFAULT_ADAPTER_ENV = "FDTD_LAB_ADAPTER"
+_DEFAULT_ADAPTER = os.environ.get(DEFAULT_ADAPTER_ENV, "fake")
+_ADAPTER = make_adapter(_DEFAULT_ADAPTER)
 _RUNS: dict[str, dict[str, Any]] = {}
 
 
-def reset_state(adapter: str = "fake") -> None:
+def reset_state(adapter: str | None = None) -> dict[str, Any]:
+    """Reset in-memory MCP state and select the active adapter.
+
+    Adapter defaults to FDTD_LAB_ADAPTER, then fake. Real adapters still require
+    FDTD_LAB_ENABLE_REAL_LUMERICAL=1 before opening/running projects.
+    """
     global _ADAPTER, _RUNS
-    _ADAPTER = make_adapter(adapter)
+    selected = adapter or os.environ.get(DEFAULT_ADAPTER_ENV, "fake")
+    _ADAPTER = make_adapter(selected)
     _RUNS = {}
+    return {"ok": True, "adapter": _ADAPTER.name}
+
+
+def active_adapter() -> dict[str, Any]:
+    return {"adapter": _ADAPTER.name, "env_default": os.environ.get(DEFAULT_ADAPTER_ENV, "fake")}
 
 
 def lumerical_status(adapter: str = "fake") -> dict[str, Any]:

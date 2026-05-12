@@ -17,6 +17,30 @@ export FDTD_LAB_ENABLE_REAL_LUMERICAL=1
 
 Normal tests and MCP use remain fake-adapter safe by default.
 
+## MCP server real-license mode
+
+The MCP server now reads `FDTD_LAB_ADAPTER` at startup. To use a company-local
+Lumerical license, set both the adapter and the real-operation safety gate before
+starting the server:
+
+```bash
+export FDTD_LAB_ADAPTER=ansys_core
+export FDTD_LAB_ENABLE_REAL_LUMERICAL=1
+export FDTD_LAB_SAMPLE_FSP=/path/to/non-sensitive-sample.fsp
+fdtd-lab-mcp
+```
+
+Expected adapter priority:
+
+1. `FDTD_LAB_ADAPTER=ansys_core` for `ansys-lumerical-core`
+2. `FDTD_LAB_ADAPTER=lumapi` only as fallback
+3. unset or `FDTD_LAB_ADAPTER=fake` for CI/dev fake mode
+
+After connecting through an MCP client, call `active_adapter` first. It should
+return `adapter: ansys_core` or `adapter: lumapi` before opening `.fsp` files.
+If it returns `fake`, the server process was started without the required
+environment or needs to be restarted.
+
 ## Detection only
 
 ```bash
