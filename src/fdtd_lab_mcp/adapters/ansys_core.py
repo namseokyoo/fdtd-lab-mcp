@@ -68,3 +68,7 @@ class AnsysCoreAdapter(ScriptSessionAdapter):
             raise AdapterUnavailable(f"Failed to open FDTD project through ansys-lumerical-core: {exc}") from exc
         logger.info("Opened FDTD project in %.3fs path=%s", time.perf_counter() - start, fsp)
         return self._store_session(session, fsp, readonly=readonly)
+
+    def _create_blank_session(self):
+        core = self._import_core()
+        return core.FDTD(hide=True)

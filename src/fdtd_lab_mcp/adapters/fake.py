@@ -2,7 +2,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
+
 from .base import ProjectHandle
+from fdtd_lab_mcp.domain.authoring import validate_fsp_save_path, validate_object_name, validate_properties
 from fdtd_lab_mcp.errors import ValidationError
 
 class FakeLumericalAdapter:
@@ -23,6 +25,18 @@ class FakeLumericalAdapter:
         sid=f"fake-session-{uuid4().hex[:8]}"; pid=f"fake-project-{uuid4().hex[:8]}"
         self.projects[pid]={"path": str(p), "readonly": readonly, "session_id": sid, "objects": self._fixture()}
         return ProjectHandle(sid, pid, str(p), readonly)
+
+    def new_project(self) -> ProjectHandle:
+        sid=f"fake-session-{uuid4().hex[:8]}"; pid=f"fake-project-{uuid4().hex[:8]}"
+        self.projects[pid]={"path": "<unsaved>", "readonly": False, "session_id": sid, "objects": {}}
+        return ProjectHandle(sid, pid, "<unsaved>", readonly=False)
+
+    def save_project_as(self, project_id: str, path: str, overwrite: bool = False) -> dict[str, Any]:
+        pr=self._project(project_id)
+        safe_path=validate_fsp_save_path(path, overwrite=overwrite)
+        Path(safe_path).write_bytes(b"fake generated fsp bytes")
+        pr["path"] = safe_path
+        return {"project_id": project_id, "path": safe_path, "saved": True, "adapter": self.name}
 
     def _project(self, project_id: str) -> dict[str, Any]:
         if project_id not in self.projects: raise ValidationError(f"unknown project_id: {project_id}")
@@ -52,6 +66,35 @@ class FakeLumericalAdapter:
         if object_name not in objs:
             raise ValidationError(f"object '{object_name}' not found. Available: {', '.join(objs)}")
         return objs[object_name]
+
+    def _add_object(self, project_id: str, name: str, object_type: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+        safe_name=validate_object_name(name)
+        props=validate_properties(properties)
+        objs=self._project(project_id)["objects"]
+        if safe_name in objs:
+            raise ValidationError(f"object '{safe_name}' already exists")
+        objs[safe_name]={"type": object_type, "properties": props}
+        return {"project_id": project_id, "object_name": safe_name, "object_type": object_type, "properties": props, "adapter": self.name}
+
+    def add_fdtd_region(self, project_id: str, name: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._add_object(project_id, name, "simulation_region", properties)
+
+    def add_rectangle(self, project_id: str, name: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._add_object(project_id, name, "structure", properties)
+
+    def add_dipole_source(self, project_id: str, name: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._add_object(project_id, name, "source", properties)
+
+    def add_power_monitor(self, project_id: str, name: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._add_object(project_id, name, "monitor", properties)
+
+    def delete_object(self, project_id: str, object_name: str) -> dict[str, Any]:
+        safe_name=validate_object_name(object_name)
+        objs=self._project(project_id)["objects"]
+        if safe_name not in objs:
+            raise ValidationError(f"object '{safe_name}' not found. Available: {', '.join(objs)}")
+        del objs[safe_name]
+        return {"project_id": project_id, "object_name": safe_name, "deleted": True, "adapter": self.name}
 
     def get_property(self, project_id: str, object_name: str, property_name: str) -> dict[str, Any]:
         obj=self._object(project_id, object_name); props=obj["properties"]

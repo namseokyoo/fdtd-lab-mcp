@@ -40,3 +40,7 @@ class LumapiAdapter(ScriptSessionAdapter):
         except Exception as exc:  # pragma: no cover - requires real Lumerical
             raise AdapterUnavailable(f"Failed to open FDTD project through direct lumapi: {exc}") from exc
         return self._store_session(session, fsp, readonly=readonly)
+
+    def _create_blank_session(self):
+        lumapi = self._import_lumapi()
+        return lumapi.FDTD(hide=True)
