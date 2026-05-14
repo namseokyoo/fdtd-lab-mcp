@@ -1,68 +1,57 @@
 # fdtd-lab-mcp
 
-`fdtd-lab-mcp` is an experimental MCP(Model Context Protocol) server for safely inspecting, copying, modifying, running, and reporting Ansys Lumerical FDTD `.fsp` projects.
+An MCP server for Ansys Lumerical FDTD `.fsp` workflows.
 
-The primary target environment is a **company local-network Lumerical environment**. For development and CI, the default adapter is `fake`, so the project can be tested without a Lumerical installation or license.
+## Features
 
-## Core direction
+- Open `.fsp` files
+- List project objects
+- List object properties
+- Read/write property values
+- Create safe run directories
+- Run simulations
+- Run parameter sweeps
+- Read monitor results
+- Export results to CSV
+- Create blank projects
+- Create minimal FDTD authoring smoke projects
+- Support `fake`, `ansys_core`, and `lumapi` adapters
 
-This project is not intended to be a generator that creates complete production templates from scratch. Instead, it builds reliability in the following order:
+## Adapters
 
-1. Safely open and inspect existing `.fsp` files.
-2. Copy the original file into a run directory before experimentation.
-3. Query objects/properties and apply limited, explicit modifications.
-4. Run parameter sweeps, simulations, and monitor result exports.
-5. Add minimal CAD authoring primitives only when needed for blank-project and smoke-fixture validation.
-
-In other words, the current authoring feature is **not** a production OLED/FDTD template system. It is the minimum plumbing needed to validate Lumerical API connectivity, save behavior, inspect behavior, and run/result paths.
-
-## Adapter architecture
-
-Supported adapters:
-
-| Adapter | Purpose | Requires Lumerical license |
+| Adapter | Description | Use case |
 | --- | --- | --- |
-| `fake` | Deterministic adapter for development and CI | No |
-| `ansys_core` | Real Lumerical adapter based on `ansys-lumerical-core` | Yes |
-| `lumapi` | Direct `lumapi` fallback adapter | Yes |
+| `fake` | Test adapter that works without Lumerical | Default for development/CI |
+| `ansys_core` | Adapter based on `ansys-lumerical-core` | Preferred real Lumerical adapter |
+| `lumapi` | Direct `lumapi` adapter | Fallback |
 
-Intended priority:
-
-1. `ansys_core`
-2. `lumapi`
-3. `fake` as the development/test default
-
-Real Lumerical operations always require an explicit safety gate:
+Real Lumerical operations require a safety gate:
 
 ```bash
 export FDTD_LAB_ENABLE_REAL_LUMERICAL=1
 ```
 
-Without this value, real adapter operations such as open/run/new project are blocked. This prevents accidental license consumption and accidental mutation of real projects.
-
-## Quick test
-
-Development and CI validation run without Lumerical:
+## Test
 
 ```bash
 python -m pytest
 ```
 
-Expected result example:
+Expected result:
 
 ```text
 25 passed, 1 skipped
 ```
 
-## Running the MCP server
+## Run the MCP server
 
-Default execution uses the `fake` adapter:
+Default mode uses the `fake` adapter.
 
 ```bash
 fdtd-lab-mcp
 ```
 
-For real company-local Lumerical usage with `ansys_core`:
+Use `ansys_core` in a real Lumerical environment:
 
 ```bash
 export FDTD_LAB_ADAPTER=ansys_core
@@ -70,7 +59,7 @@ export FDTD_LAB_ENABLE_REAL_LUMERICAL=1
 fdtd-lab-mcp
 ```
 
-If `ansys-lumerical-core` is not available in the local environment, use direct `lumapi` as fallback:
+Use `lumapi` fallback:
 
 ```bash
 export FDTD_LAB_ADAPTER=lumapi
@@ -78,92 +67,112 @@ export FDTD_LAB_ENABLE_REAL_LUMERICAL=1
 fdtd-lab-mcp
 ```
 
-## Handling slow `import_core`
+## MCP Tools
 
-In some company environments, importing `ansys.lumerical.core` can take a long time. If the import happens inside the first `open_fsp` tool call, that first tool call can time out.
-
-To reduce that risk, the MCP server pre-imports `ansys.lumerical.core` during server startup by default.
-
-```bash
-export FDTD_LAB_PREIMPORT_ANSYS_CORE=1
-```
-
-This is enabled by default. To disable it:
-
-```bash
-export FDTD_LAB_PREIMPORT_ANSYS_CORE=0
-```
-
-The intent is to:
-
-- Move the slow import cost from the first tool call into MCP server startup.
-- Let clients such as Cline/Hermes use a longer startup/connect timeout.
-- Reduce timeout risk on the first `open_fsp` call.
-
-## MCP tools overview
-
-### Status and adapter management
+### Status and adapters
 
 | Tool | Description |
 | --- | --- |
-| `active_adapter` | Report the current adapter and environment default |
-| `reset_state` | Reset in-memory state and optionally switch adapter |
-| `lumerical_status` | Check fake/real adapter detection status |
+| `active_adapter` | Show current adapter |
+| `reset_state` | Reset adapter/state |
+| `lumerical_status` | Check adapter detection status |
 
-### Existing `.fsp` inspection and modification
+### File and project inspection
 
 | Tool | Description |
 | --- | --- |
 | `open_fsp` | Open an `.fsp` file |
-| `inspect_fsp` | Open a file, list objects, and return project description |
-| `list_objects` | List objects in the current project |
-| `list_properties` | List properties for an object |
-| `get_object_property` | Read an object property value |
-| `set_object_property` | Modify an object property value |
-| `describe_project` | Summarize source/monitor/simulation region/structure candidates |
+| `inspect_fsp` | Open `.fsp` and return objects/description |
+| `list_objects` | List objects |
+| `list_properties` | List object properties |
+| `get_object_property` | Read a property value |
+| `describe_project` | Summarize sources/monitors/regions/structures |
 
-### Safe experiment and run management
+### Modification, run, and results
 
 | Tool | Description |
 | --- | --- |
-| `create_run_dir` | Copy the original `.fsp` into a run directory and create provenance |
-| `propose_experiment_plan` | Create a dry-run parameter sweep plan |
+| `set_object_property` | Change a property value |
+| `create_run_dir` | Create a copied `.fsp` and provenance file |
+| `propose_experiment_plan` | Create a sweep plan |
 | `validate_experiment_plan` | Validate a sweep plan |
-| `run_parameter_sweep` | Run a parameter sweep within approved value ranges |
+| `run_parameter_sweep` | Run a parameter sweep |
 | `run_simulation` | Run a simulation |
 | `get_monitor_result` | Read monitor results |
-| `export_csv` | Export result rows to CSV |
+| `export_csv` | Export CSV |
 
-### Phase A: minimal authoring primitives
-
-These tools provide blank-project and minimal CAD primitive authoring.
+### Authoring
 
 | Tool | Description |
 | --- | --- |
-| `new_project` | Create a blank FDTD project session |
-| `save_project_as` | Save a project as `.fsp` |
-| `add_fdtd_region` | Add an FDTD simulation region |
-| `add_rectangle` | Add a rectangle/structure object |
+| `new_project` | Create a blank project |
+| `save_project_as` | Save as `.fsp` |
+| `add_fdtd_region` | Add an FDTD region |
+| `add_rectangle` | Add a rectangle/structure |
 | `add_dipole_source` | Add a dipole source |
 | `add_power_monitor` | Add a power monitor |
 | `delete_object` | Delete an object |
+| `create_tiny_smoke_project` | Create a minimal smoke `.fsp` |
+| `run_tiny_smoke_project` | Run/check a smoke `.fsp` |
 
-Important constraints:
+## Usage examples
 
-- These tools are not a production template generator.
-- Object names reject quote, semicolon, newline, and other script-injection-risk characters.
-- Save paths must use the `.fsp` suffix.
-- Existing files are not overwritten unless `overwrite=True` is explicitly passed.
-- Arbitrary Lumerical script execution is intentionally not exposed.
+### 1. Inspect an `.fsp`
 
-### Phase B: tiny smoke project
+```python
+from fdtd_lab_mcp import tools
 
-| Tool | Description |
-| --- | --- |
-| `create_tiny_smoke_project` | Create a minimal smoke `.fsp` with FDTD/source/monitor/structure |
-| `run_tiny_smoke_project` | Open the smoke `.fsp` and validate run/result plumbing |
+tools.reset_state(adapter="fake")
+out = tools.inspect_fsp("/path/to/sample.fsp")
+print(out["objects"])
+print(out["description"])
+```
 
-`create_tiny_smoke_project` creates these objects:
+### 2. Modify a property
+
+```python
+opened = tools.open_fsp("/path/to/sample.fsp", readonly=False)
+project_id = opened["project_id"]
+
+before_after = tools.set_object_property(
+    project_id,
+    object_name="ETL",
+    property_name="z span",
+    value=4e-8,
+)
+print(before_after)
+```
+
+### 3. Run a parameter sweep
+
+```python
+out = tools.run_parameter_sweep(
+    base_fsp="/path/to/base.fsp",
+    run_name="etl_sweep",
+    object_name="ETL",
+    property_name="z span",
+    values=[2e-8, 3e-8, 4e-8],
+    monitor_name="T_monitor",
+    result_name="T",
+)
+print(out["results_csv"])
+print(out["summary_md"])
+```
+
+### 4. Create a tiny smoke project
+
+```python
+from pathlib import Path
+from fdtd_lab_mcp import tools
+
+tools.reset_state(adapter="fake")
+path = Path("/tmp/fdtd_lab_tiny.fsp")
+created = tools.create_tiny_smoke_project(str(path), overwrite=True)
+print(created["path"])
+print([o["name"] for o in created["objects"]])
+```
+
+Created objects:
 
 ```text
 FDTD
@@ -172,67 +181,7 @@ source
 T_monitor
 ```
 
-The tiny project validates:
-
-- Blank project creation
-- Primitive object creation
-- `.fsp` save behavior
-- Object list/description behavior
-- Optional run/result path behavior
-
-Important: this tiny smoke project is **not a production OLED/FDTD template**. Real production stack, material, source, monitor, boundary, and mesh conventions should be derived from actual company `.fsp` samples later, not guessed in this repository.
-
-## Direct Python smoke example
-
-Run with the fake adapter, no Lumerical required:
-
-```bash
-python - <<'PY'
-from pathlib import Path
-from fdtd_lab_mcp import tools
-
-out_path = Path('/tmp/fdtd_lab_tiny_fake.fsp')
-tools.reset_state(adapter='fake')
-created = tools.create_tiny_smoke_project(str(out_path), overwrite=True)
-print(created['path'])
-print([o['name'] for o in created['objects']])
-
-run = tools.run_tiny_smoke_project(str(out_path), timeout_sec=120)
-print(run['run']['status'])
-print(run['result']['monitor_name'])
-PY
-```
-
-Real Lumerical authoring smoke instructions are documented here:
-
-```text
-docs/real-authoring-smoke.md
-```
-
-## Real integration probe
-
-Company-local Lumerical validation is documented here:
-
-```text
-docs/company-local-integration.md
-```
-
-Detection-only examples:
-
-```bash
-python -m fdtd_lab_mcp.integration_probe --adapter ansys_core
-python -m fdtd_lab_mcp.integration_probe --adapter lumapi
-```
-
-Real open/list validation requires the explicit safety gate and a non-sensitive sample `.fsp`:
-
-```bash
-export FDTD_LAB_ENABLE_REAL_LUMERICAL=1
-export FDTD_LAB_SAMPLE_FSP=/path/to/non-sensitive-sample.fsp
-python -m fdtd_lab_mcp.integration_probe --adapter ansys_core --open --list
-```
-
-## Hermes MCP configuration example
+## Hermes MCP config example
 
 ```yaml
 mcp_servers:
@@ -241,79 +190,49 @@ mcp_servers:
     env:
       FDTD_LAB_ADAPTER: "ansys_core"
       FDTD_LAB_ENABLE_REAL_LUMERICAL: "1"
-      FDTD_LAB_SAMPLE_FSP: "/path/to/non-sensitive-sample.fsp"
       FDTD_LAB_PREIMPORT_ANSYS_CORE: "1"
-      # If required by the company license setup:
+      # If needed:
       # ANSYSLMD_LICENSE_FILE: "1055@your-license-server"
     timeout: 3600
     connect_timeout: 600
 ```
 
-## Cline MCP configuration example
+## Cline config
 
-See:
+Example file:
 
 ```text
 docs/cline_mcp_setting.json
 ```
 
-This configuration is intended to:
+## Real Lumerical checks
 
-- Use a longer MCP timeout.
-- Select `FDTD_LAB_ADAPTER=ansys_core`.
-- Explicitly set `FDTD_LAB_ENABLE_REAL_LUMERICAL=1`.
-- Keep `FDTD_LAB_PREIMPORT_ANSYS_CORE=1` so the slow import happens during server startup.
-
-## Safety policy
-
-Default safety policy:
-
-1. Development/CI defaults to the `fake` adapter.
-2. Real adapters do not perform real open/run/new project work unless `FDTD_LAB_ENABLE_REAL_LUMERICAL=1` is set.
-3. Existing `.fsp` experiments use run-directory copies instead of mutating originals directly.
-4. Parameter sweeps preserve dry-run plans and approved value ranges.
-5. Authoring primitives are intentionally minimal; arbitrary script execution is not exposed.
-6. Tiny smoke projects are plumbing fixtures, not production templates.
-
-## Common developer commands
+Detection-only:
 
 ```bash
-# Full test suite
-python -m pytest
-
-# Authoring/smoke fake tests only
-python -m pytest tests/test_authoring_fake.py -q
-
-# Syntax/bytecode sanity check
-python -m compileall src tests
-
-# Git whitespace check
-git diff --check
+python -m fdtd_lab_mcp.integration_probe --adapter ansys_core
+python -m fdtd_lab_mcp.integration_probe --adapter lumapi
 ```
 
-## Current scope and non-scope
+Real open/list:
 
-Implemented:
+```bash
+export FDTD_LAB_ENABLE_REAL_LUMERICAL=1
+export FDTD_LAB_SAMPLE_FSP=/path/to/non-sensitive-sample.fsp
+python -m fdtd_lab_mcp.integration_probe --adapter ansys_core --open --list
+```
 
-- Existing `.fsp` inspect/modify/run/sweep/export
-- Real adapter detection and safety gate
-- `ansys_core` import pre-warm
-- Minimal authoring primitives
-- Tiny smoke project creation/run fixture
-- CI tests based on the fake adapter
+Authoring smoke check:
 
-Intentionally not implemented:
+```text
+docs/real-authoring-smoke.md
+```
 
-- Production OLED stack template generation
-- Display pixel/cavity or other domain-specific template generation
-- Arbitrary Lumerical script executor exposure
-- Guessing real company material DB / mesh / boundary / source conventions
+## Development commands
 
-Once actual company `.fsp` samples are available, the preferred expansion path is:
-
-- `extract_project_recipe`
-- `clone_project_with_changes`
-- `compare_project_structure`
-- `apply_property_patch`
-
-In short, production expansion should be based on **extracting and safely modifying recipes from validated real projects**, not on imagined templates.
+```bash
+python -m pytest
+python -m pytest tests/test_authoring_fake.py -q
+python -m compileall src tests
+git diff --check
+```
