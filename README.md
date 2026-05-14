@@ -1,6 +1,6 @@
 # fdtd-lab-mcp
 
-FDTD Experiment Agent MCP for safe Ansys Lumerical `.fsp` workflows. The intended deployment target is a company local-network environment. Adapter priority is `ansys-lumerical-core` first, with direct `lumapi` as fallback. The MVP uses a deterministic fake adapter by default so development and CI do not require a Lumerical license. Real adapter detection is lazy and gated.
+FDTD Experiment Agent MCP for safe Ansys Lumerical `.fsp` workflows. The intended deployment target is a company local-network environment. Adapter priority is `ansys-lumerical-core` first, with direct `lumapi` as fallback. The MVP uses a deterministic fake adapter by default so development and CI do not require a Lumerical license. Real operations remain gated, while the MCP server pre-imports `ansys.lumerical.core` at startup by default to avoid a long first import during the first project-open tool call.
 
 ## Quick test
 
@@ -74,5 +74,12 @@ mcp_servers:
       # If required by the company license setup:
       # ANSYSLMD_LICENSE_FILE: "1055@your-license-server"
     timeout: 3600
-    connect_timeout: 60
+    connect_timeout: 600
 ```
+
+### Cline MCP configuration example
+
+For Cline, see `docs/cline_mcp_setting.json`. It sets a 600 second MCP timeout,
+selects `FDTD_LAB_ADAPTER=ansys_core`, enables the explicit real-operation gate,
+and keeps `FDTD_LAB_PREIMPORT_ANSYS_CORE=1` so the slow Ansys import is warmed
+during server startup instead of the first `open_fsp` call.

@@ -4,6 +4,7 @@ import pytest
 
 from fdtd_lab_mcp.adapters.ansys_core import AnsysCoreAdapter
 from fdtd_lab_mcp.adapters.lumapi import LumapiAdapter
+from fdtd_lab_mcp.adapters.real_base import ScriptSessionAdapter, _json_safe
 from fdtd_lab_mcp.errors import AdapterUnavailable
 
 
@@ -25,6 +26,48 @@ def test_real_open_requires_explicit_enable_even_with_existing_fsp(tmp_path, mon
     fsp.write_bytes(b'fake')
     with pytest.raises(AdapterUnavailable, match='Real Lumerical operations are disabled'):
         AnsysCoreAdapter().open_project(str(fsp))
+
+
+def test_json_safe_converts_numpy_like_values():
+    class ArrayLike:
+        def tolist(self):
+            return [1, 2, {"x": ScalarLike()}]
+
+    class ScalarLike:
+        def item(self):
+            return 3.5
+
+    assert _json_safe({"arr": ArrayLike(), "scalar": ScalarLike()}) == {"arr": [1, 2, {"x": 3.5}], "scalar": 3.5}
+
+
+def test_list_objects_uses_python_loop_not_lumerical_for_syntax():
+    class FakeSession:
+        def __init__(self):
+            self.vars = {}
+            self.scripts = []
+
+        def eval(self, script):
+            self.scripts.append(script)
+            if "getnumber" in script:
+                self.vars["fdtd_lab_n"] = 2
+            if 'get("name", 1)' in script:
+                self.vars["fdtd_lab_object_name"] = "source"
+                self.vars["fdtd_lab_object_type"] = "object"
+            if 'get("name", 2)' in script:
+                self.vars["fdtd_lab_object_name"] = "monitor"
+                self.vars["fdtd_lab_object_type"] = "analysis"
+
+        def getv(self, name):
+            return self.vars[name]
+
+    adapter = ScriptSessionAdapter()
+    adapter.projects["project-1"] = {"session_id": "session-1", "session": FakeSession(), "path": "sample.fsp", "readonly": True}
+
+    assert adapter.list_objects("project-1") == [
+        {"name": "source", "type": "object"},
+        {"name": "monitor", "type": "analysis"},
+    ]
+    assert all("for (" not in script for script in adapter.projects["project-1"]["session"].scripts)
 
 
 @pytest.mark.lumerical

@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "fdtd-lab-mcp": {
+      "command": "fdtd-lab-mcp",
+      "args": [],
+      "timeout": 600,
+      "env": {
+        "FDTD_LAB_ADAPTER": "ansys_core",
+        "FDTD_LAB_ENABLE_REAL_LUMERICAL": "1",
+        "FDTD_LAB_PREIMPORT_ANSYS_CORE": "1",
+        "FDTD_LAB_LOG_LEVEL": "INFO"
+      }
+    }
+  }
+}

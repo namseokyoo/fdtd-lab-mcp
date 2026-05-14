@@ -12,9 +12,13 @@ from fdtd_lab_mcp.reporting.summary import generate_summary
 from fdtd_lab_mcp.safety.run_manager import RunManager, sha256_file
 
 DEFAULT_ADAPTER_ENV = "FDTD_LAB_ADAPTER"
-_DEFAULT_ADAPTER = os.environ.get(DEFAULT_ADAPTER_ENV, "fake")
-_ADAPTER = make_adapter(_DEFAULT_ADAPTER)
+_ADAPTER = make_adapter(os.environ.get(DEFAULT_ADAPTER_ENV, "fake"))
 _RUNS: dict[str, dict[str, Any]] = {}
+
+
+def active_adapter() -> dict[str, Any]:
+    env_default = os.environ.get(DEFAULT_ADAPTER_ENV, "fake")
+    return {"adapter": _ADAPTER.name, "env_default": env_default, "default_env": env_default}
 
 
 def reset_state(adapter: str | None = None) -> dict[str, Any]:
@@ -27,11 +31,7 @@ def reset_state(adapter: str | None = None) -> dict[str, Any]:
     selected = adapter or os.environ.get(DEFAULT_ADAPTER_ENV, "fake")
     _ADAPTER = make_adapter(selected)
     _RUNS = {}
-    return {"ok": True, "adapter": _ADAPTER.name}
-
-
-def active_adapter() -> dict[str, Any]:
-    return {"adapter": _ADAPTER.name, "env_default": os.environ.get(DEFAULT_ADAPTER_ENV, "fake")}
+    return active_adapter()
 
 
 def lumerical_status(adapter: str = "fake") -> dict[str, Any]:

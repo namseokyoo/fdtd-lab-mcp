@@ -17,7 +17,7 @@ def test_status_all_non_invasive():
 def test_reset_state_can_select_adapter_and_reports_active():
     try:
         selected = tools.reset_state(adapter='fake')
-        assert selected == {'ok': True, 'adapter': 'fake'}
+        assert selected['adapter'] == 'fake'
         assert tools.active_adapter()['adapter'] == 'fake'
     finally:
         tools.reset_state(adapter='fake')
@@ -27,7 +27,7 @@ def test_reset_state_uses_env_default(monkeypatch):
     monkeypatch.setenv('FDTD_LAB_ADAPTER', 'fake')
     try:
         selected = tools.reset_state()
-        assert selected == {'ok': True, 'adapter': 'fake'}
+        assert selected['adapter'] == 'fake'
         active = tools.active_adapter()
         assert active['adapter'] == 'fake'
         assert active['env_default'] == 'fake'

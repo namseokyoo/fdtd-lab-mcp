@@ -1,8 +1,16 @@
 from __future__ import annotations
+
+import logging
+import os
+
 from mcp.server.fastmcp import FastMCP
+
 from . import tools
+from .adapters.ansys_core import AnsysCoreAdapter
 
 SERVER_NAME = "fdtd-lab-mcp"
+logger = logging.getLogger(__name__)
+
 
 def create_server() -> FastMCP:
     server = FastMCP(SERVER_NAME, instructions="FDTD Experiment Agent MCP. Inspect, plan, safely copy, sweep, and report Lumerical .fsp projects. Default adapter is fake/CI-safe.")
@@ -10,5 +18,26 @@ def create_server() -> FastMCP:
         server.tool(name=fn.__name__)(fn)
     return server
 
+
+def preimport_real_adapters() -> None:
+    """Warm the slow Ansys import before serving MCP tool calls.
+
+    Company-local ansys.lumerical.core import can take several minutes on first
+    call. Doing it at process startup moves the cost to MCP server startup,
+    where clients such as Cline can use a larger startup timeout, and avoids the
+    first open_fsp call timing out inside the tool call path.
+    """
+    if os.environ.get("FDTD_LAB_PREIMPORT_ANSYS_CORE", "1").lower() in {"0", "false", "no", "off"}:
+        logger.info("Skipping ansys-lumerical-core preimport because FDTD_LAB_PREIMPORT_ANSYS_CORE is disabled")
+        return
+    try:
+        AnsysCoreAdapter()._import_core()
+    except Exception as exc:
+        # Keep fake/default MCP usable outside the company Lumerical environment.
+        logger.warning("ansys-lumerical-core preimport failed; continuing MCP server startup: %s", exc)
+
+
 def main() -> None:
+    logging.basicConfig(level=os.environ.get("FDTD_LAB_LOG_LEVEL", "INFO"))
+    preimport_real_adapters()
     create_server().run(transport="stdio")

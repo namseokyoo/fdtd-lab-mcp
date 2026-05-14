@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 from typing import Any
@@ -9,10 +10,31 @@ from fdtd_lab_mcp.adapters.base import ProjectHandle
 from fdtd_lab_mcp.errors import AdapterUnavailable, ValidationError
 
 REAL_ENABLE_ENV = "FDTD_LAB_ENABLE_REAL_LUMERICAL"
+logger = logging.getLogger(__name__)
 
 
 def real_enabled() -> bool:
     return os.environ.get(REAL_ENABLE_ENV, "").lower() in {"1", "true", "yes", "on"}
+
+
+def _json_safe(value: Any) -> Any:
+    """Convert Lumerical/numpy-ish values into MCP JSON-serializable data."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(v) for v in value]
+    if hasattr(value, "tolist"):
+        return _json_safe(value.tolist())
+    if hasattr(value, "item"):
+        try:
+            return _json_safe(value.item())
+        except Exception:
+            pass
+    if hasattr(value, "__dict__"):
+        return _json_safe(vars(value))
+    return str(value)
 
 
 class ScriptSessionAdapter:
@@ -52,6 +74,7 @@ class ScriptSessionAdapter:
             "path": path,
             "readonly": readonly,
         }
+        logger.info("Stored Lumerical session adapter=%s project_id=%s readonly=%s path=%s", self.name, project_id, readonly, path)
         return ProjectHandle(session_id=session_id, project_id=project_id, path=path, readonly=readonly)
 
     def _project(self, project_id: str) -> dict[str, Any]:
@@ -82,29 +105,40 @@ class ScriptSessionAdapter:
             raise AdapterUnavailable(f"Lumerical putv('{name}') failed: {exc}") from exc
 
     def list_objects(self, project_id: str) -> list[dict[str, Any]]:
-        # Conservative first-pass script. Real sites may need naming conventions or a custom .lsf inspector.
-        script = """
-fdtd_lab_object_names = {};
-fdtd_lab_object_types = {};
-selectall;
-fdtd_lab_n = getnumber;
-for (fdtd_lab_i=1:fdtd_lab_n) {
-  fdtd_lab_name = get(\"name\", fdtd_lab_i);
-  fdtd_lab_type = get(\"type\", fdtd_lab_i);
-  fdtd_lab_object_names{fdtd_lab_i} = fdtd_lab_name;
-  fdtd_lab_object_types{fdtd_lab_i} = fdtd_lab_type;
-}
-"""
-        self._eval(project_id, script)
-        names = self._getv(project_id, "fdtd_lab_object_names")
-        types = self._getv(project_id, "fdtd_lab_object_types")
-        return self._pair_objects(names, types)
+        """List selected project objects without relying on Lumerical for-loop/array syntax.
+
+        Some company-local Lumerical scripting contexts did not support the earlier
+        `for (...) { ... }` + cell-array script. Keep the iteration in Python and use
+        only small scalar Lumerical statements per object.
+        """
+        logger.info("Listing objects adapter=%s project_id=%s", self.name, project_id)
+        self._eval(project_id, "selectall; fdtd_lab_n = getnumber;")
+        raw_count = self._getv(project_id, "fdtd_lab_n")
+        try:
+            count = int(float(_json_safe(raw_count)))
+        except (TypeError, ValueError) as exc:
+            raise AdapterUnavailable(f"Could not read selected object count from Lumerical: {raw_count!r}") from exc
+
+        objects: list[dict[str, Any]] = []
+        for index in range(1, count + 1):
+            self._eval(
+                project_id,
+                f'fdtd_lab_object_name = get("name", {index}); fdtd_lab_object_type = get("type", {index});',
+            )
+            name = _json_safe(self._getv(project_id, "fdtd_lab_object_name"))
+            obj_type = _json_safe(self._getv(project_id, "fdtd_lab_object_type"))
+            if str(name) not in {"", "None"}:
+                objects.append({"name": str(name), "type": str(obj_type)})
+        logger.info("Listed %s objects adapter=%s project_id=%s", len(objects), self.name, project_id)
+        return objects
 
     def _pair_objects(self, names: Any, types: Any) -> list[dict[str, Any]]:
-        if not isinstance(names, (list, tuple)):
-            names = list(names) if hasattr(names, "__iter__") and not isinstance(names, str) else [names]
-        if not isinstance(types, (list, tuple)):
-            types = list(types) if hasattr(types, "__iter__") and not isinstance(types, str) else [types] * len(names)
+        names = _json_safe(names)
+        types = _json_safe(types)
+        if not isinstance(names, list):
+            names = [names]
+        if not isinstance(types, list):
+            types = [types] * len(names)
         return [{"name": str(n), "type": str(t)} for n, t in zip(names, types) if str(n) not in {"", "None"}]
 
     def list_properties(self, project_id: str, object_name: str) -> list[str]:
@@ -116,7 +150,7 @@ for (fdtd_lab_i=1:fdtd_lab_n) {
     def get_property(self, project_id: str, object_name: str, property_name: str) -> dict[str, Any]:
         var = "fdtd_lab_property_value"
         self._eval(project_id, f'select("{object_name}"); {var}=get("{property_name}");')
-        return {"object_name": object_name, "property_name": property_name, "value": self._getv(project_id, var), "unit_guess": "m" if "span" in property_name or "wavelength" in property_name else None}
+        return {"object_name": object_name, "property_name": property_name, "value": _json_safe(self._getv(project_id, var)), "unit_guess": "m" if "span" in property_name or "wavelength" in property_name else None}
 
     def set_property(self, project_id: str, object_name: str, property_name: str, value: Any) -> dict[str, Any]:
         before = self.get_property(project_id, object_name, property_name)["value"]
@@ -130,8 +164,9 @@ for (fdtd_lab_i=1:fdtd_lab_n) {
         return {"status": "completed", "elapsed_sec": None, "warnings": [], "adapter": self.name}
 
     def get_monitor_result(self, project_id: str, monitor_name: str, result_name: str) -> dict[str, Any]:
+        logger.info("Getting monitor result adapter=%s project_id=%s monitor=%s result=%s", self.name, project_id, monitor_name, result_name)
         self._eval(project_id, f'fdtd_lab_result = getresult("{monitor_name}", "{result_name}");')
-        raw = self._getv(project_id, "fdtd_lab_result")
+        raw = _json_safe(self._getv(project_id, "fdtd_lab_result"))
         return {"monitor_name": monitor_name, "result_name": result_name, "raw": raw, "axes": {}, "values": [], "shape": [], "metadata": {"project_id": project_id, "source": "getresult", "adapter": self.name}, "warnings": ["Raw real-adapter result returned; schema normalization requires first company-local sample .fsp."]}
 
     def close(self, session_id: str) -> dict[str, Any]:
@@ -139,6 +174,7 @@ for (fdtd_lab_i=1:fdtd_lab_n) {
             if record["session_id"] != session_id:
                 continue
             try:
+                logger.info("Closing Lumerical session adapter=%s session_id=%s project_id=%s", self.name, session_id, project_id)
                 record["session"].close()
             finally:
                 del self.projects[project_id]
