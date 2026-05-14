@@ -45,6 +45,35 @@ def open_fsp(path: str, readonly: bool = True) -> dict[str, Any]:
     return {"session_id": h.session_id, "project_id": h.project_id, "path": h.path, "readonly": h.readonly, "adapter": _ADAPTER.name}
 
 
+def new_project() -> dict[str, Any]:
+    h = _ADAPTER.new_project()
+    return {"session_id": h.session_id, "project_id": h.project_id, "path": h.path, "readonly": h.readonly, "adapter": _ADAPTER.name}
+
+
+def save_project_as(project_id: str, path: str, overwrite: bool = False) -> dict[str, Any]:
+    return _ADAPTER.save_project_as(project_id, path, overwrite=overwrite)
+
+
+def add_fdtd_region(project_id: str, name: str = "FDTD", properties: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _ADAPTER.add_fdtd_region(project_id, name, properties or {})
+
+
+def add_rectangle(project_id: str, name: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _ADAPTER.add_rectangle(project_id, name, properties or {})
+
+
+def add_dipole_source(project_id: str, name: str = "source", properties: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _ADAPTER.add_dipole_source(project_id, name, properties or {})
+
+
+def add_power_monitor(project_id: str, name: str = "T_monitor", properties: dict[str, Any] | None = None) -> dict[str, Any]:
+    return _ADAPTER.add_power_monitor(project_id, name, properties or {})
+
+
+def delete_object(project_id: str, object_name: str) -> dict[str, Any]:
+    return _ADAPTER.delete_object(project_id, object_name)
+
+
 def list_objects(project_id: str) -> dict[str, Any]:
     return {"project_id": project_id, "objects": _ADAPTER.list_objects(project_id)}
 
@@ -85,6 +114,34 @@ def describe_project(project_id: str) -> dict[str, Any]:
 def inspect_fsp(path: str, readonly: bool = True) -> dict[str, Any]:
     opened=open_fsp(path, readonly=readonly)
     return {**opened, "objects": list_objects(opened["project_id"])["objects"], "description": describe_project(opened["project_id"])}
+
+
+def create_tiny_smoke_project(path: str, overwrite: bool = False) -> dict[str, Any]:
+    opened = new_project()
+    project_id = opened["project_id"]
+    add_fdtd_region(project_id, "FDTD", {"x span": 1e-6, "y span": 1e-6, "z span": 1e-6, "mesh accuracy": 1})
+    add_rectangle(project_id, "block", {"x span": 2e-7, "y span": 2e-7, "z span": 2e-7, "material": "Si (Silicon) - Palik"})
+    add_dipole_source(project_id, "source", {"wavelength start": 4e-7, "wavelength stop": 7e-7})
+    add_power_monitor(project_id, "T_monitor", {"monitor type": "2D Z-normal"})
+    saved = save_project_as(project_id, path, overwrite=overwrite)
+    objects = list_objects(project_id)["objects"]
+    return {
+        **opened,
+        **saved,
+        "objects": objects,
+        "description": describe_project(project_id),
+        "warnings": [
+            "Tiny smoke project is not a production OLED/FDTD template; it only verifies authoring, save, inspect, and run plumbing.",
+            "Material names can be installation-dependent in real Lumerical environments.",
+        ],
+    }
+
+
+def run_tiny_smoke_project(path: str, timeout_sec: int = 120) -> dict[str, Any]:
+    opened = open_fsp(path, readonly=False)
+    run = run_simulation(opened["project_id"], timeout_sec=timeout_sec)
+    result = get_monitor_result(opened["project_id"], "T_monitor", "T")
+    return {**opened, "run": run, "result": result}
 
 
 def create_run_dir(base_fsp: str, run_name: str) -> dict[str, Any]:

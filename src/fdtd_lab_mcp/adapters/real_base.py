@@ -7,6 +7,7 @@ from typing import Any
 from uuid import uuid4
 
 from fdtd_lab_mcp.adapters.base import ProjectHandle
+from fdtd_lab_mcp.domain.authoring import lsf_quote, validate_fsp_save_path, validate_object_name, validate_properties
 from fdtd_lab_mcp.errors import AdapterUnavailable, ValidationError
 
 REAL_ENABLE_ENV = "FDTD_LAB_ENABLE_REAL_LUMERICAL"
@@ -76,6 +77,53 @@ class ScriptSessionAdapter:
         }
         logger.info("Stored Lumerical session adapter=%s project_id=%s readonly=%s path=%s", self.name, project_id, readonly, path)
         return ProjectHandle(session_id=session_id, project_id=project_id, path=path, readonly=readonly)
+
+    def _create_blank_session(self) -> Any:
+        raise NotImplementedError("real adapters must implement _create_blank_session")
+
+    def new_project(self) -> ProjectHandle:
+        logger.info("Creating blank Lumerical project adapter=%s", self.name)
+        self._require_enabled()
+        try:
+            session = self._create_blank_session()
+        except Exception as exc:  # pragma: no cover - requires real Lumerical
+            raise AdapterUnavailable(f"Failed to create blank FDTD project through {self.name}: {exc}") from exc
+        return self._store_session(session, "<unsaved>", readonly=False)
+
+    def save_project_as(self, project_id: str, path: str, overwrite: bool = False) -> dict[str, Any]:
+        safe_path = validate_fsp_save_path(path, overwrite=overwrite)
+        self._eval(project_id, f"save({lsf_quote(safe_path)});")
+        self._project(project_id)["path"] = safe_path
+        return {"project_id": project_id, "path": safe_path, "saved": True, "adapter": self.name}
+
+    def _set_properties(self, project_id: str, properties: dict[str, Any]) -> None:
+        for prop, value in validate_properties(properties).items():
+            self._putv(project_id, "fdtd_lab_new_value", value)
+            self._eval(project_id, f"set({lsf_quote(prop)}, fdtd_lab_new_value);")
+
+    def _add_object(self, project_id: str, name: str, command: str, object_type: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+        safe_name = validate_object_name(name)
+        props = validate_properties(properties)
+        self._eval(project_id, f"{command}; set(\"name\", {lsf_quote(safe_name)});")
+        self._set_properties(project_id, props)
+        return {"project_id": project_id, "object_name": safe_name, "object_type": object_type, "properties": props, "adapter": self.name}
+
+    def add_fdtd_region(self, project_id: str, name: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._add_object(project_id, name, "addfdtd", "simulation_region", properties)
+
+    def add_rectangle(self, project_id: str, name: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._add_object(project_id, name, "addrect", "structure", properties)
+
+    def add_dipole_source(self, project_id: str, name: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._add_object(project_id, name, "adddipole", "source", properties)
+
+    def add_power_monitor(self, project_id: str, name: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+        return self._add_object(project_id, name, "addpower", "monitor", properties)
+
+    def delete_object(self, project_id: str, object_name: str) -> dict[str, Any]:
+        safe_name = validate_object_name(object_name)
+        self._eval(project_id, f"select({lsf_quote(safe_name)}); delete;")
+        return {"project_id": project_id, "object_name": safe_name, "deleted": True, "adapter": self.name}
 
     def _project(self, project_id: str) -> dict[str, Any]:
         try:
