@@ -2,16 +2,27 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
 from fdtd_lab_mcp.adapters.base import ProjectHandle
-from fdtd_lab_mcp.domain.authoring import lsf_quote, validate_fsp_save_path, validate_object_name, validate_properties
+from fdtd_lab_mcp.domain.authoring import (
+    lsf_quote,
+    validate_fsp_save_path,
+    validate_object_name,
+    validate_properties,
+    validate_property_name,
+    validate_result_name,
+)
 from fdtd_lab_mcp.errors import AdapterUnavailable, ValidationError
 
 REAL_ENABLE_ENV = "FDTD_LAB_ENABLE_REAL_LUMERICAL"
 logger = logging.getLogger(__name__)
+
+_STATIC_PROPERTY_CANDIDATES = ["x", "y", "z", "x span", "y span", "z span", "material", "wavelength start", "wavelength stop"]
+_MAX_SCRIPT_SNIPPET = 240
 
 
 def real_enabled() -> bool:
@@ -36,6 +47,14 @@ def _json_safe(value: Any) -> Any:
     if hasattr(value, "__dict__"):
         return _json_safe(vars(value))
     return str(value)
+
+
+def _sanitize_script_snippet(script: str) -> str:
+    snippet = re.sub(r"\s+", " ", script).strip()
+    snippet = re.sub(r"(?i)(password|token|secret|key)\s*=\s*[^;]+", r"\1=<redacted>", snippet)
+    if len(snippet) > _MAX_SCRIPT_SNIPPET:
+        return snippet[: _MAX_SCRIPT_SNIPPET - 3] + "..."
+    return snippet
 
 
 class ScriptSessionAdapter:
@@ -91,21 +110,24 @@ class ScriptSessionAdapter:
         return self._store_session(session, "<unsaved>", readonly=False)
 
     def save_project_as(self, project_id: str, path: str, overwrite: bool = False) -> dict[str, Any]:
+        self._require_writable(project_id, "save_project_as")
         safe_path = validate_fsp_save_path(path, overwrite=overwrite)
-        self._eval(project_id, f"save({lsf_quote(safe_path)});")
+        self._eval(project_id, f"save({lsf_quote(safe_path)});", phase="save_project_as")
         self._project(project_id)["path"] = safe_path
         return {"project_id": project_id, "path": safe_path, "saved": True, "adapter": self.name}
 
-    def _set_properties(self, project_id: str, properties: dict[str, Any]) -> None:
+    def _set_properties(self, project_id: str, properties: dict[str, Any], *, phase: str) -> None:
         for prop, value in validate_properties(properties).items():
-            self._putv(project_id, "fdtd_lab_new_value", value)
-            self._eval(project_id, f"set({lsf_quote(prop)}, fdtd_lab_new_value);")
+            self._putv(project_id, "fdtd_lab_new_value", value, phase=f"{phase}:put_property_value")
+            self._eval(project_id, f"set({lsf_quote(prop)}, fdtd_lab_new_value);", phase=f"{phase}:set_property:{prop}")
 
     def _add_object(self, project_id: str, name: str, command: str, object_type: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+        self._require_writable(project_id, f"add_{object_type}")
         safe_name = validate_object_name(name)
         props = validate_properties(properties)
-        self._eval(project_id, f"{command}; set(\"name\", {lsf_quote(safe_name)});")
-        self._set_properties(project_id, props)
+        phase = f"add_object:{object_type}"
+        self._eval(project_id, f"{command}; set({lsf_quote('name')}, {lsf_quote(safe_name)});", phase=phase)
+        self._set_properties(project_id, props, phase=phase)
         return {"project_id": project_id, "object_name": safe_name, "object_type": object_type, "properties": props, "adapter": self.name}
 
     def add_fdtd_region(self, project_id: str, name: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -121,8 +143,9 @@ class ScriptSessionAdapter:
         return self._add_object(project_id, name, "addpower", "monitor", properties)
 
     def delete_object(self, project_id: str, object_name: str) -> dict[str, Any]:
+        self._require_writable(project_id, "delete_object")
         safe_name = validate_object_name(object_name)
-        self._eval(project_id, f"select({lsf_quote(safe_name)}); delete;")
+        self._eval(project_id, f"select({lsf_quote(safe_name)}); delete;", phase="delete_object")
         return {"project_id": project_id, "object_name": safe_name, "deleted": True, "adapter": self.name}
 
     def _project(self, project_id: str) -> dict[str, Any]:
@@ -131,37 +154,43 @@ class ScriptSessionAdapter:
         except KeyError as exc:
             raise ValidationError(f"unknown project_id: {project_id}") from exc
 
+    def _require_writable(self, project_id: str, operation: str) -> None:
+        if self._project(project_id).get("readonly", True):
+            raise ValidationError(f"operation {operation} requires a writable project handle; reopen with readonly=False or create a new project")
+
     def _session(self, project_id: str) -> Any:
         return self._project(project_id)["session"]
 
-    def _eval(self, project_id: str, script: str) -> None:
+    def _context(self, project_id: str) -> str:
+        record = self._project(project_id)
+        return f"adapter={self.name} project_id={project_id} session_id={record.get('session_id')} readonly={record.get('readonly')}"
+
+    def _eval(self, project_id: str, script: str, *, phase: str = "script_eval") -> None:
         try:
             self._session(project_id).eval(script)
         except Exception as exc:  # pragma: no cover - requires real Lumerical
-            raise AdapterUnavailable(f"Lumerical script execution failed: {exc}") from exc
+            snippet = _sanitize_script_snippet(script)
+            raise AdapterUnavailable(
+                f"Lumerical script execution failed during phase={phase} ({self._context(project_id)}): {exc}; script_snippet={snippet!r}"
+            ) from exc
 
-    def _getv(self, project_id: str, name: str) -> Any:
+    def _getv(self, project_id: str, name: str, *, phase: str = "getv") -> Any:
         try:
             return self._session(project_id).getv(name)
         except Exception as exc:  # pragma: no cover - requires real Lumerical
-            raise AdapterUnavailable(f"Lumerical getv('{name}') failed: {exc}") from exc
+            raise AdapterUnavailable(f"Lumerical getv failed during phase={phase} ({self._context(project_id)}) variable={name!r}: {exc}") from exc
 
-    def _putv(self, project_id: str, name: str, value: Any) -> None:
+    def _putv(self, project_id: str, name: str, value: Any, *, phase: str = "putv") -> None:
         try:
             self._session(project_id).putv(name, value)
         except Exception as exc:  # pragma: no cover - requires real Lumerical
-            raise AdapterUnavailable(f"Lumerical putv('{name}') failed: {exc}") from exc
+            raise AdapterUnavailable(f"Lumerical putv failed during phase={phase} ({self._context(project_id)}) variable={name!r}: {exc}") from exc
 
     def list_objects(self, project_id: str) -> list[dict[str, Any]]:
-        """List selected project objects without relying on Lumerical for-loop/array syntax.
-
-        Some company-local Lumerical scripting contexts did not support the earlier
-        `for (...) { ... }` + cell-array script. Keep the iteration in Python and use
-        only small scalar Lumerical statements per object.
-        """
+        """List selected project objects without relying on Lumerical for-loop/array syntax."""
         logger.info("Listing objects adapter=%s project_id=%s", self.name, project_id)
-        self._eval(project_id, "selectall; fdtd_lab_n = getnumber;")
-        raw_count = self._getv(project_id, "fdtd_lab_n")
+        self._eval(project_id, "selectall; fdtd_lab_n = getnumber;", phase="list_objects:count")
+        raw_count = self._getv(project_id, "fdtd_lab_n", phase="list_objects:count")
         try:
             count = int(float(_json_safe(raw_count)))
         except (TypeError, ValueError) as exc:
@@ -171,10 +200,11 @@ class ScriptSessionAdapter:
         for index in range(1, count + 1):
             self._eval(
                 project_id,
-                f'fdtd_lab_object_name = get("name", {index}); fdtd_lab_object_type = get("type", {index});',
+                f"fdtd_lab_object_name = get({lsf_quote('name')}, {index}); fdtd_lab_object_type = get({lsf_quote('type')}, {index});",
+                phase=f"list_objects:item:{index}",
             )
-            name = _json_safe(self._getv(project_id, "fdtd_lab_object_name"))
-            obj_type = _json_safe(self._getv(project_id, "fdtd_lab_object_type"))
+            name = _json_safe(self._getv(project_id, "fdtd_lab_object_name", phase=f"list_objects:item:{index}:name"))
+            obj_type = _json_safe(self._getv(project_id, "fdtd_lab_object_type", phase=f"list_objects:item:{index}:type"))
             if str(name) not in {"", "None"}:
                 objects.append({"name": str(name), "type": str(obj_type)})
         logger.info("Listed %s objects adapter=%s project_id=%s", len(objects), self.name, project_id)
@@ -189,33 +219,64 @@ class ScriptSessionAdapter:
             types = [types] * len(names)
         return [{"name": str(n), "type": str(t)} for n, t in zip(names, types) if str(n) not in {"", "None"}]
 
-    def list_properties(self, project_id: str, object_name: str) -> list[str]:
-        # Lumerical has version-dependent property discovery. Return a pragmatic common set
-        # after selecting the object; failures clearly indicate naming mismatch.
-        self._eval(project_id, f'select("{object_name}");')
-        return ["x", "y", "z", "x span", "y span", "z span", "material", "wavelength start", "wavelength stop"]
+    def list_properties(self, project_id: str, object_name: str) -> dict[str, Any]:
+        # Lumerical has version-dependent property discovery. Return a clearly labeled
+        # static candidate set only after selecting the object to validate the name/path.
+        safe_name = validate_object_name(object_name)
+        self._eval(project_id, f"select({lsf_quote(safe_name)});", phase="list_properties:select")
+        return {
+            "properties": list(_STATIC_PROPERTY_CANDIDATES),
+            "verified": False,
+            "capability_source": "static_common_candidates",
+            "warnings": [
+                "Real Lumerical dynamic property discovery is not implemented in this environment; returned properties are unverified common candidates, not object-specific capabilities."
+            ],
+        }
 
     def get_property(self, project_id: str, object_name: str, property_name: str) -> dict[str, Any]:
+        safe_name = validate_object_name(object_name)
+        safe_property = validate_property_name(property_name)
         var = "fdtd_lab_property_value"
-        self._eval(project_id, f'select("{object_name}"); {var}=get("{property_name}");')
-        return {"object_name": object_name, "property_name": property_name, "value": _json_safe(self._getv(project_id, var)), "unit_guess": "m" if "span" in property_name or "wavelength" in property_name else None}
+        self._eval(project_id, f"select({lsf_quote(safe_name)}); {var}=get({lsf_quote(safe_property)});", phase="get_property")
+        return {"object_name": safe_name, "property_name": safe_property, "value": _json_safe(self._getv(project_id, var, phase="get_property:value")), "unit_guess": "m" if "span" in safe_property or "wavelength" in safe_property else None}
 
     def set_property(self, project_id: str, object_name: str, property_name: str, value: Any) -> dict[str, Any]:
-        before = self.get_property(project_id, object_name, property_name)["value"]
-        self._putv(project_id, "fdtd_lab_new_value", value)
-        self._eval(project_id, f'select("{object_name}"); set("{property_name}", fdtd_lab_new_value);')
-        after = self.get_property(project_id, object_name, property_name)["value"]
-        return {"object_name": object_name, "property_name": property_name, "before": before, "after": after}
+        self._require_writable(project_id, "set_property")
+        safe_name = validate_object_name(object_name)
+        safe_property = validate_property_name(property_name)
+        before = self.get_property(project_id, safe_name, safe_property)["value"]
+        self._putv(project_id, "fdtd_lab_new_value", value, phase="set_property:put_value")
+        self._eval(project_id, f"select({lsf_quote(safe_name)}); set({lsf_quote(safe_property)}, fdtd_lab_new_value);", phase="set_property")
+        after = self.get_property(project_id, safe_name, safe_property)["value"]
+        return {"object_name": safe_name, "property_name": safe_property, "before": before, "after": after}
 
     def run(self, project_id: str, timeout_sec: int = 3600) -> dict[str, Any]:
-        self._eval(project_id, "run;")
-        return {"status": "completed", "elapsed_sec": None, "warnings": [], "adapter": self.name}
+        self._require_writable(project_id, "run")
+        self._eval(project_id, "run;", phase="run")
+        return {
+            "status": "completed",
+            "elapsed_sec": None,
+            "warnings": ["Real adapter run currently delegates to Lumerical 'run;' and does not enforce timeout_sec inside the Lumerical process."],
+            "adapter": self.name,
+            "timeout_sec_requested": timeout_sec,
+        }
 
     def get_monitor_result(self, project_id: str, monitor_name: str, result_name: str) -> dict[str, Any]:
-        logger.info("Getting monitor result adapter=%s project_id=%s monitor=%s result=%s", self.name, project_id, monitor_name, result_name)
-        self._eval(project_id, f'fdtd_lab_result = getresult("{monitor_name}", "{result_name}");')
-        raw = _json_safe(self._getv(project_id, "fdtd_lab_result"))
-        return {"monitor_name": monitor_name, "result_name": result_name, "raw": raw, "axes": {}, "values": [], "shape": [], "metadata": {"project_id": project_id, "source": "getresult", "adapter": self.name}, "warnings": ["Raw real-adapter result returned; schema normalization requires first company-local sample .fsp."]}
+        safe_monitor = validate_object_name(monitor_name)
+        safe_result = validate_result_name(result_name)
+        logger.info("Getting monitor result adapter=%s project_id=%s monitor=%s result=%s", self.name, project_id, safe_monitor, safe_result)
+        self._eval(project_id, f"fdtd_lab_result = getresult({lsf_quote(safe_monitor)}, {lsf_quote(safe_result)});", phase="get_monitor_result")
+        raw = _json_safe(self._getv(project_id, "fdtd_lab_result", phase="get_monitor_result:raw"))
+        return {
+            "monitor_name": safe_monitor,
+            "result_name": safe_result,
+            "raw": raw,
+            "axes": {},
+            "values": [],
+            "shape": [],
+            "metadata": {"project_id": project_id, "source": "getresult", "adapter": self.name, "normalized": False},
+            "warnings": ["Raw un-normalized real-adapter result returned; schema normalization requires first company-local sample .fsp."],
+        }
 
     def close(self, session_id: str) -> dict[str, Any]:
         for project_id, record in list(self.projects.items()):

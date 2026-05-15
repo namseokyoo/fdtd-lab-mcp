@@ -115,3 +115,47 @@ def test_run_tiny_smoke_project_uses_existing_project(tmp_path: Path):
     assert out["path"] == str(path)
     assert out["run"]["status"] == "completed"
     assert out["result"]["monitor_name"] == "T_monitor"
+
+
+def test_readonly_project_rejects_mutating_operations(tmp_path: Path):
+    path = tmp_path / "base.fsp"
+    path.write_bytes(b"fake")
+    opened = tools.open_fsp(str(path), readonly=True)
+    project_id = opened["project_id"]
+
+    mutators = [
+        lambda: tools.save_project_as(project_id, str(tmp_path / "copy.fsp")),
+        lambda: tools.add_rectangle(project_id, "new_block", {}),
+        lambda: tools.delete_object(project_id, "ETL"),
+        lambda: tools.set_object_property(project_id, "ETL", "z span", 4e-8),
+        lambda: tools.run_simulation(project_id),
+    ]
+
+    for mutate in mutators:
+        with pytest.raises(Exception, match="requires a writable project handle"):
+            mutate()
+
+
+def test_unsafe_property_and_result_names_rejected():
+    opened = tools.new_project()
+    project_id = opened["project_id"]
+    tools.add_rectangle(project_id, "block", {"z span": 1e-7})
+    tools.add_power_monitor(project_id, "T_monitor", {})
+
+    with pytest.raises(Exception, match="unsafe property name"):
+        tools.set_object_property(project_id, "block", 'z span";deleteall;', 2e-7)
+    with pytest.raises(Exception, match="unsafe result name"):
+        tools.get_monitor_result(project_id, "T_monitor", 'T";deleteall;')
+
+
+def test_list_properties_includes_capability_metadata():
+    opened = tools.new_project()
+    project_id = opened["project_id"]
+    tools.add_rectangle(project_id, "block", {"z span": 1e-7})
+
+    payload = tools.list_properties(project_id, "block")
+
+    assert payload["properties"] == ["z span"]
+    assert payload["verified"] is True
+    assert payload["capability_source"] == "adapter_dynamic_or_fixture"
+    assert payload["warnings"] == []

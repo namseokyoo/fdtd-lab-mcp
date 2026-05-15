@@ -85,3 +85,122 @@ def test_company_local_ansys_core_open_list_smoke(monkeypatch):
         assert isinstance(objects, list)
     finally:
         adapter.close(handle.session_id)
+
+
+def test_eval_error_includes_phase_context_and_sanitized_snippet():
+    class FailingSession:
+        def eval(self, script):
+            raise RuntimeError("boom")
+
+    adapter = ScriptSessionAdapter()
+    adapter.projects["project-1"] = {"session_id": "session-1", "session": FailingSession(), "path": "sample.fsp", "readonly": True}
+
+    with pytest.raises(AdapterUnavailable) as exc:
+        adapter._eval("project-1", "selectall; password = topsecret; " + "x" * 400, phase="unit-test-phase")
+
+    message = str(exc.value)
+    assert "phase=unit-test-phase" in message
+    assert "adapter=script_session" in message
+    assert "project_id=project-1" in message
+    assert "session_id=session-1" in message
+    assert "topsecret" not in message
+    assert len(message) < 700
+
+
+def test_real_adapter_quotes_names_and_property_paths():
+    class RecordingSession:
+        def __init__(self):
+            self.vars = {"fdtd_lab_property_value": 1}
+            self.scripts = []
+
+        def eval(self, script):
+            self.scripts.append(script)
+            if "getresult" in script:
+                self.vars["fdtd_lab_result"] = {"T": [1]}
+
+        def getv(self, name):
+            return self.vars[name]
+
+        def putv(self, name, value):
+            self.vars[name] = value
+
+    adapter = ScriptSessionAdapter()
+    session = RecordingSession()
+    adapter.projects["project-1"] = {"session_id": "session-1", "session": session, "path": "sample.fsp", "readonly": False}
+
+    adapter.get_property("project-1", "valid object", "x span")
+    adapter.set_property("project-1", "valid object", "x span", 2)
+    adapter.get_monitor_result("project-1", "T monitor", "T")
+
+    joined = "\n".join(session.scripts)
+    assert 'select("valid object")' in joined
+    assert 'get("x span")' in joined
+    assert 'set("x span", fdtd_lab_new_value)' in joined
+    assert 'getresult("T monitor", "T")' in joined
+
+    with pytest.raises(Exception, match="unsafe object name"):
+        adapter.get_property("project-1", 'bad";delete;', "x span")
+    with pytest.raises(Exception, match="unsafe property name"):
+        adapter.get_property("project-1", "valid object", 'x";delete;')
+
+
+def test_real_list_properties_returns_unverified_static_candidates():
+    class RecordingSession:
+        def __init__(self):
+            self.scripts = []
+
+        def eval(self, script):
+            self.scripts.append(script)
+
+    adapter = ScriptSessionAdapter()
+    session = RecordingSession()
+    adapter.projects["project-1"] = {"session_id": "session-1", "session": session, "path": "sample.fsp", "readonly": True}
+
+    payload = adapter.list_properties("project-1", "ETL")
+
+    assert payload["verified"] is False
+    assert payload["capability_source"] == "static_common_candidates"
+    assert "z span" in payload["properties"]
+    assert payload["warnings"]
+    assert session.scripts == ['select("ETL");']
+
+
+def test_raw_monitor_result_is_marked_and_sweep_guard_rejects():
+    from fdtd_lab_mcp import tools
+
+    raw = {
+        "metadata": {"normalized": False},
+        "axes": {},
+        "values": [],
+        "warnings": ["raw sample"],
+    }
+
+    with pytest.raises(RuntimeError, match="raw/un-normalized"):
+        tools._require_normalized_monitor_result(raw)
+
+
+def test_describe_project_labels_unverified_static_candidates(monkeypatch):
+    from fdtd_lab_mcp import tools
+
+    class StaticCandidateAdapter:
+        name = "static"
+
+        def list_objects(self, project_id):
+            return [{"name": "ETL", "type": "structure"}]
+
+        def list_properties(self, project_id, object_name):
+            return {
+                "properties": ["z span", "material"],
+                "verified": False,
+                "capability_source": "static_common_candidates",
+                "warnings": ["static only"],
+            }
+
+    monkeypatch.setattr(tools, "_ADAPTER", StaticCandidateAdapter())
+
+    description = tools.describe_project("project-1")
+
+    assert description["sweep_candidates"] == [
+        {"object": "ETL", "property": "z span", "reason": "unverified static candidate", "verified": False, "capability_source": "static_common_candidates"}
+    ]
+    assert description["warnings"]

@@ -16,6 +16,37 @@ _ADAPTER = make_adapter(os.environ.get(DEFAULT_ADAPTER_ENV, "fake"))
 _RUNS: dict[str, dict[str, Any]] = {}
 
 
+def _properties_payload(project_id: str, object_name: str, response: Any) -> dict[str, Any]:
+    if isinstance(response, dict):
+        props = response.get("properties", [])
+        return {
+            "project_id": project_id,
+            "object_name": object_name,
+            "properties": props,
+            "verified": bool(response.get("verified", True)),
+            "capability_source": response.get("capability_source", "adapter"),
+            "warnings": list(response.get("warnings", [])),
+        }
+    return {
+        "project_id": project_id,
+        "object_name": object_name,
+        "properties": list(response),
+        "verified": True,
+        "capability_source": "adapter_dynamic_or_fixture",
+        "warnings": [],
+    }
+
+
+def _require_normalized_monitor_result(result: dict[str, Any]) -> None:
+    if result.get("metadata", {}).get("normalized") is False or "wavelength_m" not in result.get("axes", {}):
+        warnings = result.get("warnings") or []
+        detail = f" Warnings: {'; '.join(warnings)}" if warnings else ""
+        raise RuntimeError(
+            "monitor result is raw/un-normalized and cannot be used for parameter sweep CSV export until real result normalization is implemented."
+            + detail
+        )
+
+
 def active_adapter() -> dict[str, Any]:
     env_default = os.environ.get(DEFAULT_ADAPTER_ENV, "fake")
     return {"adapter": _ADAPTER.name, "env_default": env_default, "default_env": env_default}
@@ -79,7 +110,7 @@ def list_objects(project_id: str) -> dict[str, Any]:
 
 
 def list_properties(project_id: str, object_name: str) -> dict[str, Any]:
-    return {"project_id": project_id, "object_name": object_name, "properties": _ADAPTER.list_properties(project_id, object_name)}
+    return _properties_payload(project_id, object_name, _ADAPTER.list_properties(project_id, object_name))
 
 
 def get_object_property(project_id: str, object_name: str, property_name: str) -> dict[str, Any]:
@@ -102,13 +133,22 @@ def describe_project(project_id: str) -> dict[str, Any]:
     candidates=[]
     for name in structures + sources:
         try:
-            props=_ADAPTER.list_properties(project_id, name)
+            payload=_properties_payload(project_id, name, _ADAPTER.list_properties(project_id, name))
+            props=payload["properties"]
+            if not payload.get("verified", True):
+                for prop in props:
+                    if "span" in prop or "wavelength" in prop:
+                        candidates.append({"object": name, "property": prop, "reason": "unverified static candidate", "verified": False, "capability_source": payload.get("capability_source")})
+                continue
         except Exception:
             props=[]
         for prop in props:
             if "span" in prop or "wavelength" in prop:
-                candidates.append({"object": name, "property": prop, "reason": "layer thickness" if "span" in prop else "spectral range"})
-    return {"project_id": project_id, "project_type_guess": "OLED stack or planar optical stack", "simulation_regions": regions, "sources": sources, "monitors": monitors, "structures": structures, "sweep_candidates": candidates, "warnings": []}
+                candidates.append({"object": name, "property": prop, "reason": "layer thickness" if "span" in prop else "spectral range", "verified": True})
+    warnings=[]
+    if any(candidate.get("verified") is False for candidate in candidates):
+        warnings.append("Some sweep candidates are static real-adapter property candidates and are not verified object-specific capabilities.")
+    return {"project_id": project_id, "project_type_guess": "OLED stack or planar optical stack", "simulation_regions": regions, "sources": sources, "monitors": monitors, "structures": structures, "sweep_candidates": candidates, "warnings": warnings}
 
 
 def inspect_fsp(path: str, readonly: bool = True) -> dict[str, Any]:
@@ -190,6 +230,7 @@ def run_parameter_sweep(base_fsp: str, run_name: str, object_name: str, property
         change=set_object_property(opened["project_id"], object_name, property_name, value, run_id=run["run_id"])
         status=run_simulation(opened["project_id"], run_id=run["run_id"])["status"]
         result=get_monitor_result(opened["project_id"], monitor_name, result_name)
+        _require_normalized_monitor_result(result)
         wavelengths=result["axes"]["wavelength_m"]["values"]
         for wl,rv in zip(wavelengths, result["values"]):
             rows.append({"run_id": run["run_id"], "case_id": f"case_{i:04d}", "object": object_name, "property": property_name, "value": value, "monitor": monitor_name, "result": result_name, "wavelength_m": wl, "result_value": rv, "status": status})

@@ -1,20 +1,31 @@
-from __future__ import annotations
-
 from pathlib import Path
 from typing import Any
 
 from fdtd_lab_mcp.errors import ValidationError
 
 _UNSAFE_NAME_CHARS = {'"', "'", ";", "\n", "\r"}
+_UNSAFE_PROPERTY_CHARS = {'"', "'", ";", "\n", "\r"}
+
+
+def _validate_lsf_label(value: str, label: str, unsafe_chars: set[str]) -> str:
+    if not isinstance(value, str) or not value.strip():
+        raise ValidationError(f"{label} must be a non-empty string")
+    stripped = value.strip()
+    if any(ch in stripped for ch in unsafe_chars):
+        raise ValidationError(f"unsafe {label}: {value!r}")
+    return stripped
 
 
 def validate_object_name(name: str) -> str:
-    if not isinstance(name, str) or not name.strip():
-        raise ValidationError("object name must be a non-empty string")
-    stripped = name.strip()
-    if any(ch in stripped for ch in _UNSAFE_NAME_CHARS):
-        raise ValidationError(f"unsafe object name: {name!r}")
-    return stripped
+    return _validate_lsf_label(name, "object name", _UNSAFE_NAME_CHARS)
+
+
+def validate_property_name(name: str) -> str:
+    return _validate_lsf_label(name, "property name", _UNSAFE_PROPERTY_CHARS)
+
+
+def validate_result_name(name: str) -> str:
+    return _validate_lsf_label(name, "result name", _UNSAFE_NAME_CHARS)
 
 
 def validate_properties(properties: dict[str, Any] | None) -> dict[str, Any]:
@@ -22,12 +33,10 @@ def validate_properties(properties: dict[str, Any] | None) -> dict[str, Any]:
         return {}
     if not isinstance(properties, dict):
         raise ValidationError("properties must be a dictionary")
-    for key in properties:
-        if not isinstance(key, str) or not key.strip():
-            raise ValidationError("property names must be non-empty strings")
-        if any(ch in key for ch in {'"', "\n", "\r"}):
-            raise ValidationError(f"unsafe property name: {key!r}")
-    return dict(properties)
+    validated: dict[str, Any] = {}
+    for key, value in properties.items():
+        validated[validate_property_name(key)] = value
+    return validated
 
 
 def validate_fsp_save_path(path: str, overwrite: bool = False) -> str:
@@ -41,6 +50,6 @@ def validate_fsp_save_path(path: str, overwrite: bool = False) -> str:
 
 
 def lsf_quote(value: str) -> str:
-    # Lumerical script strings are double-quoted. Backslash/quote escaping is enough
-    # after callers validate names and property keys.
+    # Lumerical script strings are double-quoted. Escape anyway so validated labels
+    # and filesystem paths can be embedded without creating executable syntax.
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'

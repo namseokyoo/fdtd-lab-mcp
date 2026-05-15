@@ -4,7 +4,7 @@ from typing import Any
 from uuid import uuid4
 
 from .base import ProjectHandle
-from fdtd_lab_mcp.domain.authoring import validate_fsp_save_path, validate_object_name, validate_properties
+from fdtd_lab_mcp.domain.authoring import validate_fsp_save_path, validate_object_name, validate_property_name, validate_properties, validate_result_name
 from fdtd_lab_mcp.errors import ValidationError
 
 class FakeLumericalAdapter:
@@ -33,6 +33,7 @@ class FakeLumericalAdapter:
 
     def save_project_as(self, project_id: str, path: str, overwrite: bool = False) -> dict[str, Any]:
         pr=self._project(project_id)
+        self._require_writable(project_id, "save_project_as")
         safe_path=validate_fsp_save_path(path, overwrite=overwrite)
         Path(safe_path).write_bytes(b"fake generated fsp bytes")
         pr["path"] = safe_path
@@ -41,6 +42,10 @@ class FakeLumericalAdapter:
     def _project(self, project_id: str) -> dict[str, Any]:
         if project_id not in self.projects: raise ValidationError(f"unknown project_id: {project_id}")
         return self.projects[project_id]
+
+    def _require_writable(self, project_id: str, operation: str) -> None:
+        if self._project(project_id).get("readonly", True):
+            raise ValidationError(f"operation {operation} requires a writable project handle; reopen with readonly=False or create a new project")
 
     def _fixture(self) -> dict[str, dict[str, Any]]:
         return {
@@ -62,12 +67,14 @@ class FakeLumericalAdapter:
         return list(obj["properties"].keys())
 
     def _object(self, project_id: str, object_name: str) -> dict[str, Any]:
+        safe_name=validate_object_name(object_name)
         objs=self._project(project_id)["objects"]
-        if object_name not in objs:
-            raise ValidationError(f"object '{object_name}' not found. Available: {', '.join(objs)}")
-        return objs[object_name]
+        if safe_name not in objs:
+            raise ValidationError(f"object '{safe_name}' not found. Available: {', '.join(objs)}")
+        return objs[safe_name]
 
     def _add_object(self, project_id: str, name: str, object_type: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
+        self._require_writable(project_id, f"add_{object_type}")
         safe_name=validate_object_name(name)
         props=validate_properties(properties)
         objs=self._project(project_id)["objects"]
@@ -89,6 +96,7 @@ class FakeLumericalAdapter:
         return self._add_object(project_id, name, "monitor", properties)
 
     def delete_object(self, project_id: str, object_name: str) -> dict[str, Any]:
+        self._require_writable(project_id, "delete_object")
         safe_name=validate_object_name(object_name)
         objs=self._project(project_id)["objects"]
         if safe_name not in objs:
@@ -97,25 +105,30 @@ class FakeLumericalAdapter:
         return {"project_id": project_id, "object_name": safe_name, "deleted": True, "adapter": self.name}
 
     def get_property(self, project_id: str, object_name: str, property_name: str) -> dict[str, Any]:
+        safe_property = validate_property_name(property_name)
         obj=self._object(project_id, object_name); props=obj["properties"]
-        if property_name not in props:
-            raise ValidationError(f"property '{property_name}' not found on '{object_name}'. Available: {', '.join(props)}")
-        return {"object_name": object_name, "property_name": property_name, "value": props[property_name], "unit_guess": "m" if "span" in property_name or "wavelength" in property_name else None}
+        if safe_property not in props:
+            raise ValidationError(f"property '{safe_property}' not found on '{object_name}'. Available: {', '.join(props)}")
+        return {"object_name": object_name, "property_name": safe_property, "value": props[safe_property], "unit_guess": "m" if "span" in safe_property or "wavelength" in safe_property else None}
 
     def set_property(self, project_id: str, object_name: str, property_name: str, value: Any) -> dict[str, Any]:
-        before=self.get_property(project_id, object_name, property_name)["value"]
-        self._object(project_id, object_name)["properties"][property_name]=value
-        return {"object_name": object_name, "property_name": property_name, "before": before, "after": value}
+        self._require_writable(project_id, "set_property")
+        safe_property = validate_property_name(property_name)
+        before=self.get_property(project_id, object_name, safe_property)["value"]
+        self._object(project_id, object_name)["properties"][safe_property]=value
+        return {"object_name": object_name, "property_name": safe_property, "before": before, "after": value}
 
     def run(self, project_id: str, timeout_sec: int = 3600) -> dict[str, Any]:
-        self._project(project_id)
+        self._require_writable(project_id, "run")
         return {"status": "completed", "elapsed_sec": 0.01, "warnings": [], "adapter": self.name}
 
     def get_monitor_result(self, project_id: str, monitor_name: str, result_name: str) -> dict[str, Any]:
-        self._object(project_id, monitor_name)
+        safe_monitor = validate_object_name(monitor_name)
+        safe_result = validate_result_name(result_name)
+        self._object(project_id, safe_monitor)
         wavelengths=[4.5e-7, 5.0e-7, 5.5e-7, 6.0e-7]
-        values=[0.41, 0.55, 0.49, 0.43] if monitor_name.startswith("T") else [0.12,0.10,0.13,0.15]
-        return {"monitor_name": monitor_name, "result_name": result_name, "axes": {"wavelength_m": {"values": wavelengths, "unit": "m"}}, "values": values, "shape": [len(values)], "metadata": {"project_id": project_id, "source": "fake"}, "warnings": []}
+        values=[0.41, 0.55, 0.49, 0.43] if safe_monitor.startswith("T") else [0.12,0.10,0.13,0.15]
+        return {"monitor_name": safe_monitor, "result_name": safe_result, "axes": {"wavelength_m": {"values": wavelengths, "unit": "m"}}, "values": values, "shape": [len(values)], "metadata": {"project_id": project_id, "source": "fake", "normalized": True}, "warnings": []}
 
     def close(self, session_id: str) -> dict[str, Any]:
         for pid in [pid for pid,p in self.projects.items() if p["session_id"]==session_id]: del self.projects[pid]
