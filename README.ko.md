@@ -12,7 +12,7 @@ Ansys Lumerical FDTD `.fsp` 파일을 MCP 도구로 다루기 위한 서버입�
 - simulation 실행
 - parameter sweep 실행
 - monitor result 조회
-- result CSV export
+- result CSV 및 PNG plot/image export
 - blank project 생성
 - 최소 FDTD authoring smoke project 생성
 - 실제 Lumerical application/license 해제를 위한 project/session handle 종료 지원
@@ -41,7 +41,7 @@ python -m pytest
 예상 결과:
 
 ```text
-39 passed, 1 skipped
+55 passed, 1 skipped
 ```
 
 ## MCP 서버 실행
@@ -102,6 +102,9 @@ fdtd-lab-mcp
 | `run_simulation` | simulation 실행 |
 | `get_monitor_result` | monitor result 조회 |
 | `export_csv` | CSV export |
+| `export_monitor_plot` | normalized 1D monitor result를 PNG plot으로 export |
+| `export_sweep_plot` | sweep row 또는 sweep CSV를 PNG overlay plot으로 export |
+| `export_field_image` | conservative normalized 2D field result/component를 PNG heatmap으로 export |
 | `close_project` | `project_id`로 열린 project를 닫고 Lumerical session/license 해제 |
 | `close` | 기존 `session_id` 기반 close |
 
@@ -170,9 +173,34 @@ out = tools.run_parameter_sweep(
 )
 print(out["results_csv"])
 print(out["summary_md"])
+print(out["sweep_plot_png"])
 ```
 
-### 4. tiny smoke project 생성
+### 4. result visualization export
+
+```python
+opened = tools.open_fsp("/path/to/sample.fsp")
+project_id = opened["project_id"]
+
+monitor_plot = tools.export_monitor_plot(
+    project_id, "T_monitor", "T", "/tmp/t_monitor.png", overwrite=True
+)
+
+field_image = tools.export_field_image(
+    project_id, "T_monitor", "E", "/tmp/field_ex.png", component="Ex", plane="xy", overwrite=True
+)
+
+tools.close_project(project_id)
+print(monitor_plot["path"], field_image["path"])
+```
+
+Visualization/export 제한:
+
+- PNG export는 Python-side이며 CI-safe입니다. optional `plot` extra가 설치되어 있으면 `matplotlib`을 사용하고, 없으면 내장 PNG renderer로 fallback합니다.
+- `export_monitor_plot`은 fake adapter가 반환하는 stable normalized 1D schema(`axes.wavelength_m.values`와 같은 길이의 numeric `values`)가 필요합니다. 실제 adapter의 raw payload는 company-local sample로 안전한 normalization contract가 확정되기 전까지 거부합니다.
+- `export_field_image`는 의도적으로 보수적인 subset만 지원합니다: 2D numeric `values` matrix 또는 `values["Ex"]` 같은 component dictionary. 3D data는 명시적인 `slice_index`가 필요합니다. GUI Visualizer/movie export는 stable path에 포함하지 않습니다.
+
+### 5. tiny smoke project 생성
 
 ```python
 from pathlib import Path

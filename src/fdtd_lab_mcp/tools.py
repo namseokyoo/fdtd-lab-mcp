@@ -12,6 +12,14 @@ from fdtd_lab_mcp.adapters.lumapi import LumapiAdapter
 from fdtd_lab_mcp.adapters.real_base import REAL_ENABLE_ENV, real_enabled
 from fdtd_lab_mcp.domain.oled import classify_role
 from fdtd_lab_mcp.reporting.csv_export import export_monitor_csv
+from fdtd_lab_mcp.reporting.plots import (
+    export_heatmap,
+    export_xy_plot,
+    normalize_field_matrix,
+    normalize_monitor_result,
+    normalize_sweep_rows,
+    read_sweep_csv,
+)
 from fdtd_lab_mcp.reporting.summary import generate_summary
 from fdtd_lab_mcp.safety.run_manager import RunManager, sha256_file
 
@@ -297,6 +305,69 @@ def export_csv(rows: list[dict[str, Any]], path: str) -> dict[str, Any]:
     return export_monitor_csv(rows, path)
 
 
+def export_monitor_plot(project_id: str, monitor_name: str, result_name: str, path: str, overwrite: bool = False) -> dict[str, Any]:
+    """Export a 1D normalized monitor result as a PNG plot."""
+    result = get_monitor_result(project_id, monitor_name, result_name)
+    normalized = normalize_monitor_result(result)
+    title = f"{normalized['monitor_name'] or monitor_name}: {normalized['result_name'] or result_name}"
+    plot = export_xy_plot(
+        [{"label": str(normalized["result_name"] or result_name), "x": normalized["x"], "y": normalized["y"]}],
+        path,
+        title=title,
+        x_label=normalized["x_label"],
+        y_label=normalized["y_label"],
+        overwrite=overwrite,
+    )
+    return {**plot, "project_id": project_id, "monitor_name": monitor_name, "result_name": result_name}
+
+
+def export_sweep_plot(
+    path: str,
+    rows: list[dict[str, Any]] | None = None,
+    csv_path: str | None = None,
+    x_key: str = "wavelength_m",
+    y_key: str = "result_value",
+    series_key: str = "value",
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Export sweep rows or a sweep CSV as an overlay PNG plot."""
+    if rows is None:
+        if csv_path is None:
+            raise ValueError("export_sweep_plot requires rows or csv_path")
+        rows = read_sweep_csv(csv_path)
+    series = normalize_sweep_rows(rows, x_key=x_key, y_key=y_key, series_key=series_key)
+    plot = export_xy_plot(series, path, title="parameter sweep", x_label=x_key, y_label=y_key, overwrite=overwrite)
+    return {**plot, "x_key": x_key, "y_key": y_key, "series_key": series_key}
+
+
+def export_field_image(
+    project_id: str,
+    monitor_name: str,
+    result_name: str,
+    path: str,
+    component: str | None = None,
+    plane: str | None = None,
+    slice_index: int | None = None,
+    overwrite: bool = False,
+) -> dict[str, Any]:
+    """Export a conservative normalized 2D field result subset as a PNG image."""
+    result = get_monitor_result(project_id, monitor_name, result_name)
+    normalized = normalize_field_matrix(result, component=component, plane=plane, slice_index=slice_index)
+    title_parts = [monitor_name, result_name]
+    if normalized.get("component"):
+        title_parts.append(str(normalized["component"]))
+    title = ": ".join(title_parts)
+    image = export_heatmap(normalized["matrix"], path, title=title, overwrite=overwrite)
+    return {
+        **image,
+        "project_id": project_id,
+        "monitor_name": monitor_name,
+        "result_name": result_name,
+        "component": normalized.get("component"),
+        "plane": normalized.get("plane"),
+    }
+
+
 def run_parameter_sweep(base_fsp: str, run_name: str, object_name: str, property_name: str, values: list[Any], monitor_name: str, result_name: str, approved_changes: list[dict[str, Any]] | None = None, dry_run: bool = False) -> dict[str, Any]:
     if dry_run:
         return propose_experiment_plan(base_fsp, run_name, object_name, property_name, values, monitor_name, result_name)
@@ -321,11 +392,12 @@ def run_parameter_sweep(base_fsp: str, run_name: str, object_name: str, property
         csv_path=str(Path(run["run_dir"])/"results"/"results.csv")
         summary_path=str(Path(run["run_dir"])/"summary.md")
         csv_info=export_monitor_csv(rows, csv_path)
+        sweep_plot=export_sweep_plot(str(Path(run["run_dir"])/"results"/"sweep.png"), rows=rows, overwrite=True)
         summary=generate_summary(summary_path, run_id=run["run_id"], parameter={"object": object_name, "property": property_name, "values": values}, result_rows=rows)
         after=sha256_file(base_fsp)
         if before != after:
             raise RuntimeError("safety violation: base .fsp checksum changed")
-        return {"run_id": run["run_id"], "run_dir": run["run_dir"], "working_fsp": run["working_fsp"], "results_csv": csv_info["path"], "summary_md": summary["path"], "provenance_json": run["provenance_path"], "rows": len(rows), "base_checksum_unchanged": True}
+        return {"run_id": run["run_id"], "run_dir": run["run_dir"], "working_fsp": run["working_fsp"], "results_csv": csv_info["path"], "sweep_plot_png": sweep_plot["path"], "summary_md": summary["path"], "provenance_json": run["provenance_path"], "rows": len(rows), "base_checksum_unchanged": True}
     except BaseException as exc:
         _auto_close_internal_project(project_id, exc)
         closed = True

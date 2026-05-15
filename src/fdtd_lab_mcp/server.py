@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 def create_server() -> FastMCP:
     server = FastMCP(SERVER_NAME, instructions="FDTD Experiment Agent MCP. Inspect, plan, safely copy, sweep, and report Lumerical .fsp projects. Default adapter is fake/CI-safe.")
-    for fn in [tools.server_info, tools.active_adapter, tools.reset_state, tools.lumerical_status, tools.open_fsp, tools.new_project, tools.save_project_as, tools.add_fdtd_region, tools.add_rectangle, tools.add_dipole_source, tools.add_power_monitor, tools.delete_object, tools.list_objects, tools.list_properties, tools.get_object_property, tools.set_object_property, tools.describe_project, tools.create_run_dir, tools.run_simulation, tools.get_monitor_result, tools.close_project, tools.close, tools.run_parameter_sweep, tools.export_csv, tools.inspect_fsp, tools.create_tiny_smoke_project, tools.run_tiny_smoke_project, tools.propose_experiment_plan, tools.validate_experiment_plan]:
+    for fn in [tools.server_info, tools.active_adapter, tools.reset_state, tools.lumerical_status, tools.open_fsp, tools.new_project, tools.save_project_as, tools.add_fdtd_region, tools.add_rectangle, tools.add_dipole_source, tools.add_power_monitor, tools.delete_object, tools.list_objects, tools.list_properties, tools.get_object_property, tools.set_object_property, tools.describe_project, tools.create_run_dir, tools.run_simulation, tools.get_monitor_result, tools.close_project, tools.close, tools.run_parameter_sweep, tools.export_csv, tools.export_monitor_plot, tools.export_sweep_plot, tools.export_field_image, tools.inspect_fsp, tools.create_tiny_smoke_project, tools.run_tiny_smoke_project, tools.propose_experiment_plan, tools.validate_experiment_plan]:
         server.tool(name=fn.__name__)(fn)
     return server
 

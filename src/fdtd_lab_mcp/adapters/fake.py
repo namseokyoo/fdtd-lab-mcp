@@ -126,6 +126,20 @@ class FakeLumericalAdapter:
         safe_monitor = validate_object_name(monitor_name)
         safe_result = validate_result_name(result_name)
         self._object(project_id, safe_monitor)
+        if safe_result.lower() in {"e", "field", "field_profile"}:
+            values = {
+                "Ex": [[0.0, 0.2, 0.4, 0.2], [0.1, 0.5, 0.9, 0.4], [0.0, 0.3, 0.6, 0.2]],
+                "Ey": [[0.1, 0.1, 0.2, 0.1], [0.2, 0.4, 0.6, 0.3], [0.1, 0.2, 0.3, 0.1]],
+            }
+            return {
+                "monitor_name": safe_monitor,
+                "result_name": safe_result,
+                "axes": {"x_m": {"values": [-1.5e-7, -5e-8, 5e-8, 1.5e-7], "unit": "m"}, "y_m": {"values": [-1e-7, 0.0, 1e-7], "unit": "m"}},
+                "values": values,
+                "shape": [3, 4],
+                "metadata": {"project_id": project_id, "source": "fake", "normalized": True, "field_components": list(values)},
+                "warnings": ["Fake field data is a deterministic 2D fixture for exporter tests, not a physical simulation result."],
+            }
         wavelengths=[4.5e-7, 5.0e-7, 5.5e-7, 6.0e-7]
         values=[0.41, 0.55, 0.49, 0.43] if safe_monitor.startswith("T") else [0.12,0.10,0.13,0.15]
         return {"monitor_name": safe_monitor, "result_name": safe_result, "axes": {"wavelength_m": {"values": wavelengths, "unit": "m"}}, "values": values, "shape": [len(values)], "metadata": {"project_id": project_id, "source": "fake", "normalized": True}, "warnings": []}

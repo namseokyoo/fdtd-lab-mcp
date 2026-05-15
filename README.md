@@ -15,8 +15,8 @@ Ansys Lumerical FDTD `.fsp` 파일을 열고, 구조를 조회하고, 값을 수
 - List objects and properties
 - Read/write object properties
 - Create safe run directories
-- Run simulations and parameter sweeps
-- Export monitor results to CSV
+- Run simulations and parameter sweeps with sweep overlay PNG output
+- Export monitor results to CSV and PNG plots/images
 - Create minimal FDTD authoring smoke projects
 - Support `fake`, `ansys_core`, and `lumapi` adapters
 
@@ -45,3 +45,13 @@ export FDTD_LAB_ADAPTER=lumapi
 export FDTD_LAB_ENABLE_REAL_LUMERICAL=1
 fdtd-lab-mcp
 ```
+
+## Result visualization/export tools
+
+| Tool | Output | Notes |
+| --- | --- | --- |
+| `export_monitor_plot` | PNG line plot | Requires normalized 1D monitor data (`wavelength_m` axis + numeric values). |
+| `export_sweep_plot` | PNG overlay plot | Accepts sweep rows or a sweep CSV; `run_parameter_sweep` also writes `results/sweep.png`. |
+| `export_field_image` | PNG heatmap | Conservative normalized 2D/component subset; GUI Visualizer and movies are not in the stable path. |
+
+Current version: `0.2.0`.

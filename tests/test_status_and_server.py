@@ -54,3 +54,6 @@ def test_server_registers_close_project_tools():
     registered = set(server._tool_manager._tools)
     assert "close_project" in registered
     assert "close" in registered
+    assert "export_monitor_plot" in registered
+    assert "export_sweep_plot" in registered
+    assert "export_field_image" in registered

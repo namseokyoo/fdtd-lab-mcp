@@ -12,7 +12,7 @@ An MCP server for Ansys Lumerical FDTD `.fsp` workflows.
 - Run simulations
 - Run parameter sweeps
 - Read monitor results
-- Export results to CSV
+- Export results to CSV and PNG plots/images
 - Create blank projects
 - Create minimal FDTD authoring smoke projects
 - Close project/session handles to release real Lumerical applications/licenses
@@ -41,7 +41,7 @@ python -m pytest
 Expected result:
 
 ```text
-39 passed, 1 skipped
+55 passed, 1 skipped
 ```
 
 ## Run the MCP server
@@ -102,6 +102,9 @@ fdtd-lab-mcp
 | `run_simulation` | Run a simulation |
 | `get_monitor_result` | Read monitor results |
 | `export_csv` | Export CSV |
+| `export_monitor_plot` | Export a normalized 1D monitor result to a PNG plot |
+| `export_sweep_plot` | Export sweep rows or a sweep CSV to a PNG overlay plot |
+| `export_field_image` | Export a conservative normalized 2D field result/component to a PNG heatmap |
 | `close_project` | Close an open project by `project_id` and release the backing Lumerical session/license |
 | `close` | Legacy close by `session_id` |
 
@@ -170,9 +173,34 @@ out = tools.run_parameter_sweep(
 )
 print(out["results_csv"])
 print(out["summary_md"])
+print(out["sweep_plot_png"])
 ```
 
-### 4. Create a tiny smoke project
+### 4. Export result visualizations
+
+```python
+opened = tools.open_fsp("/path/to/sample.fsp")
+project_id = opened["project_id"]
+
+monitor_plot = tools.export_monitor_plot(
+    project_id, "T_monitor", "T", "/tmp/t_monitor.png", overwrite=True
+)
+
+field_image = tools.export_field_image(
+    project_id, "T_monitor", "E", "/tmp/field_ex.png", component="Ex", plane="xy", overwrite=True
+)
+
+tools.close_project(project_id)
+print(monitor_plot["path"], field_image["path"])
+```
+
+Visualization/export limitations:
+
+- PNG export is Python-side and CI-safe. It uses `matplotlib` when the optional `plot` extra is installed and falls back to a built-in PNG renderer otherwise.
+- `export_monitor_plot` requires the stable normalized 1D schema returned by the fake adapter: `axes.wavelength_m.values` plus same-length numeric `values`. Raw real-adapter payloads are rejected until a company-local sample establishes a safe normalization contract.
+- `export_field_image` intentionally supports a conservative subset: a 2D numeric `values` matrix or a component dictionary such as `values["Ex"]`. 3D data requires an explicit `slice_index`. GUI Visualizer/movie export is not part of the stable path.
+
+### 5. Create a tiny smoke project
 
 ```python
 from pathlib import Path
