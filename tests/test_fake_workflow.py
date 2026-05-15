@@ -62,3 +62,51 @@ def test_plan_and_validate(tmp_path):
     plan=tools.propose_experiment_plan(str(base), 'etl', 'ETL', 'z span', [1e-8], 'T_monitor', 'T')
     assert plan['dry_run'] is True
     assert tools.validate_experiment_plan(plan)['ok'] is True
+
+
+def test_low_level_open_fsp_leaves_handle_until_explicit_close(tmp_path):
+    opened = tools.open_fsp(str(sample_fsp(tmp_path)))
+
+    assert opened["project_id"] in tools._ADAPTER.projects
+
+    tools.close_project(opened["project_id"])
+    assert opened["project_id"] not in tools._ADAPTER.projects
+
+
+def test_inspect_fsp_auto_closes_on_success(tmp_path):
+    out = tools.inspect_fsp(str(sample_fsp(tmp_path)))
+
+    assert out["project_id"] not in tools._ADAPTER.projects
+    assert tools._ADAPTER.projects == {}
+
+
+def test_inspect_fsp_auto_closes_on_failure(tmp_path, monkeypatch):
+    def fail_describe(project_id: str):
+        raise RuntimeError("forced inspect failure")
+
+    monkeypatch.setattr(tools, "describe_project", fail_describe)
+
+    with pytest.raises(RuntimeError, match="forced inspect failure"):
+        tools.inspect_fsp(str(sample_fsp(tmp_path)))
+
+    assert tools._ADAPTER.projects == {}
+
+
+def test_parameter_sweep_auto_closes_on_success(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base = sample_fsp(tmp_path)
+
+    out = tools.run_parameter_sweep(str(base), "etl_sweep_autoclose", "ETL", "z span", [2e-8], "T_monitor", "T")
+
+    assert out["base_checksum_unchanged"] is True
+    assert tools._ADAPTER.projects == {}
+
+
+def test_parameter_sweep_auto_closes_on_failure(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    base = sample_fsp(tmp_path)
+
+    with pytest.raises(Exception, match="object 'DOES_NOT_EXIST' not found"):
+        tools.run_parameter_sweep(str(base), "etl_sweep_failure", "DOES_NOT_EXIST", "z span", [2e-8], "T_monitor", "T")
+
+    assert tools._ADAPTER.projects == {}

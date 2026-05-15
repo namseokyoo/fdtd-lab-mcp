@@ -130,6 +130,14 @@ class FakeLumericalAdapter:
         values=[0.41, 0.55, 0.49, 0.43] if safe_monitor.startswith("T") else [0.12,0.10,0.13,0.15]
         return {"monitor_name": safe_monitor, "result_name": safe_result, "axes": {"wavelength_m": {"values": wavelengths, "unit": "m"}}, "values": values, "shape": [len(values)], "metadata": {"project_id": project_id, "source": "fake", "normalized": True}, "warnings": []}
 
+    def close_project(self, project_id: str) -> dict[str, Any]:
+        pr = self._project(project_id)
+        session_id = pr["session_id"]
+        del self.projects[project_id]
+        return {"project_id": project_id, "session_id": session_id, "closed": True, "adapter": self.name}
+
     def close(self, session_id: str) -> dict[str, Any]:
-        for pid in [pid for pid,p in self.projects.items() if p["session_id"]==session_id]: del self.projects[pid]
-        return {"closed": True, "session_id": session_id}
+        closed_projects = []
+        for pid in [pid for pid,p in self.projects.items() if p["session_id"]==session_id]:
+            closed_projects.append(self.close_project(pid)["project_id"])
+        return {"closed": True, "session_id": session_id, "project_ids": closed_projects, "adapter": self.name}

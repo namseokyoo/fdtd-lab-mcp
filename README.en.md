@@ -15,6 +15,7 @@ An MCP server for Ansys Lumerical FDTD `.fsp` workflows.
 - Export results to CSV
 - Create blank projects
 - Create minimal FDTD authoring smoke projects
+- Close project/session handles to release real Lumerical applications/licenses
 - Support `fake`, `ansys_core`, and `lumapi` adapters
 
 ## Adapters
@@ -40,7 +41,7 @@ python -m pytest
 Expected result:
 
 ```text
-25 passed, 1 skipped
+39 passed, 1 skipped
 ```
 
 ## Run the MCP server
@@ -73,6 +74,7 @@ fdtd-lab-mcp
 
 | Tool | Description |
 | --- | --- |
+| `server_info` | Show server/version metadata and adapter gate details |
 | `active_adapter` | Show current adapter |
 | `reset_state` | Reset adapter/state |
 | `lumerical_status` | Check adapter detection status |
@@ -81,8 +83,8 @@ fdtd-lab-mcp
 
 | Tool | Description |
 | --- | --- |
-| `open_fsp` | Open an `.fsp` file |
-| `inspect_fsp` | Open `.fsp` and return objects/description |
+| `open_fsp` | Open an `.fsp` file; caller owns `close_project(project_id)` |
+| `inspect_fsp` | One-shot open/read/auto-close `.fsp` and return objects/description |
 | `list_objects` | List objects |
 | `list_properties` | List object properties |
 | `get_object_property` | Read a property value |
@@ -96,24 +98,32 @@ fdtd-lab-mcp
 | `create_run_dir` | Create a copied `.fsp` and provenance file |
 | `propose_experiment_plan` | Create a sweep plan |
 | `validate_experiment_plan` | Validate a sweep plan |
-| `run_parameter_sweep` | Run a parameter sweep |
+| `run_parameter_sweep` | One-shot run of a parameter sweep on a working copy; auto-closes the internally opened project |
 | `run_simulation` | Run a simulation |
 | `get_monitor_result` | Read monitor results |
 | `export_csv` | Export CSV |
+| `close_project` | Close an open project by `project_id` and release the backing Lumerical session/license |
+| `close` | Legacy close by `session_id` |
 
 ### Authoring
 
 | Tool | Description |
 | --- | --- |
-| `new_project` | Create a blank project |
+| `new_project` | Create a blank project; caller owns `close_project(project_id)` |
 | `save_project_as` | Save as `.fsp` |
 | `add_fdtd_region` | Add an FDTD region |
 | `add_rectangle` | Add a rectangle/structure |
 | `add_dipole_source` | Add a dipole source |
 | `add_power_monitor` | Add a power monitor |
 | `delete_object` | Delete an object |
-| `create_tiny_smoke_project` | Create a minimal smoke `.fsp` |
-| `run_tiny_smoke_project` | Run/check a smoke `.fsp` |
+| `create_tiny_smoke_project` | One-shot create/save/auto-close a minimal smoke `.fsp` |
+| `run_tiny_smoke_project` | One-shot open/run/read/auto-close a smoke `.fsp` |
+
+## Project lifecycle contract
+
+- `open_fsp()` and `new_project()` are low-level handle factories. They intentionally leave the project/session open and return `project_id`; callers must run `close_project(project_id)` when finished, especially with real Lumerical adapters to release the GUI process and license.
+- One-shot high-level helpers that open/create projects internally now auto-close those internal projects after collecting their outputs: `inspect_fsp()`, `create_tiny_smoke_project()`, `run_tiny_smoke_project()`, and `run_parameter_sweep()`. They also attempt this cleanup on failure without masking the original exception.
+- `close(session_id)` remains available for legacy session-id cleanup, but `close_project(project_id)` is the preferred lifecycle API.
 
 ## Usage examples
 
@@ -141,6 +151,9 @@ before_after = tools.set_object_property(
     value=4e-8,
 )
 print(before_after)
+
+# Important for real adapters: close when done to release the FDTD app/license.
+tools.close_project(project_id)
 ```
 
 ### 3. Run a parameter sweep
@@ -221,6 +234,14 @@ export FDTD_LAB_ENABLE_REAL_LUMERICAL=1
 export FDTD_LAB_SAMPLE_FSP=/path/to/non-sensitive-sample.fsp
 python -m fdtd_lab_mcp.integration_probe --adapter ansys_core --open --list
 ```
+
+Manual mutation/session-close smoke:
+
+1. Open a writable non-sensitive project with `open_fsp(path, readonly=False)`.
+2. Run `set_object_property(project_id, "FDTD", "x span", <new span>)`.
+3. Run `run_simulation(project_id)`.
+4. Run `close_project(project_id)`.
+5. Verify the FDTD app exits from the system tray/task manager and the license is released.
 
 Authoring smoke check:
 

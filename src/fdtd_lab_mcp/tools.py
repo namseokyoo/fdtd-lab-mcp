@@ -1,17 +1,27 @@
 from __future__ import annotations
 import os
+import warnings
 from pathlib import Path
 from typing import Any
+
+from fdtd_lab_mcp import __version__
 from fdtd_lab_mcp.adapters import make_adapter
 from fdtd_lab_mcp.adapters.fake import FakeLumericalAdapter
 from fdtd_lab_mcp.adapters.ansys_core import AnsysCoreAdapter
 from fdtd_lab_mcp.adapters.lumapi import LumapiAdapter
+from fdtd_lab_mcp.adapters.real_base import REAL_ENABLE_ENV, real_enabled
 from fdtd_lab_mcp.domain.oled import classify_role
 from fdtd_lab_mcp.reporting.csv_export import export_monitor_csv
 from fdtd_lab_mcp.reporting.summary import generate_summary
 from fdtd_lab_mcp.safety.run_manager import RunManager, sha256_file
 
 DEFAULT_ADAPTER_ENV = "FDTD_LAB_ADAPTER"
+SERVER_NAME = "fdtd-lab-mcp"
+ADAPTER_STATUS_KEYS = {
+    "fake": ["api", "installation_detected", "notes", "ok", "products"],
+    "ansys_core": ["api", "error", "installation_detected", "module", "notes", "ok", "package_version", "products"],
+    "lumapi": ["api", "error", "installation_detected", "module", "notes", "ok", "products"],
+}
 _ADAPTER = make_adapter(os.environ.get(DEFAULT_ADAPTER_ENV, "fake"))
 _RUNS: dict[str, dict[str, Any]] = {}
 
@@ -52,6 +62,23 @@ def active_adapter() -> dict[str, Any]:
     return {"adapter": _ADAPTER.name, "env_default": env_default, "default_env": env_default}
 
 
+def server_info() -> dict[str, Any]:
+    """Return read-only metadata about this MCP server and adapter gates."""
+    env_default = os.environ.get(DEFAULT_ADAPTER_ENV, "fake")
+    return {
+        "server_name": SERVER_NAME,
+        "version": __version__,
+        "active_adapter": _ADAPTER.name,
+        "env_default": env_default,
+        "default_env": env_default,
+        "real_lumerical": {
+            "env": REAL_ENABLE_ENV,
+            "enabled": real_enabled(),
+        },
+        "adapter_status_keys": ADAPTER_STATUS_KEYS,
+    }
+
+
 def reset_state(adapter: str | None = None) -> dict[str, Any]:
     """Reset in-memory MCP state and select the active adapter.
 
@@ -69,6 +96,21 @@ def lumerical_status(adapter: str = "fake") -> dict[str, Any]:
     if adapter == "all":
         return {"fake": FakeLumericalAdapter().status(), "ansys_core": AnsysCoreAdapter().status(), "lumapi": LumapiAdapter().status()}
     return make_adapter(adapter).status()
+
+
+def _auto_close_internal_project(project_id: str, primary_error: BaseException | None = None) -> None:
+    """Close a project opened by a one-shot helper without hiding its primary failure."""
+    try:
+        close_project(project_id)
+    except Exception as close_error:
+        if primary_error is not None:
+            note = f"Additionally failed to close internally opened project {project_id}: {close_error}"
+            if hasattr(primary_error, "add_note"):
+                primary_error.add_note(note)
+            else:
+                warnings.warn(note, RuntimeWarning, stacklevel=2)
+            return
+        raise RuntimeError(f"failed to close internally opened project {project_id}: {close_error}") from close_error
 
 
 def open_fsp(path: str, readonly: bool = True) -> dict[str, Any]:
@@ -152,36 +194,65 @@ def describe_project(project_id: str) -> dict[str, Any]:
 
 
 def inspect_fsp(path: str, readonly: bool = True) -> dict[str, Any]:
-    opened=open_fsp(path, readonly=readonly)
-    return {**opened, "objects": list_objects(opened["project_id"])["objects"], "description": describe_project(opened["project_id"])}
+    opened = open_fsp(path, readonly=readonly)
+    project_id = opened["project_id"]
+    closed = False
+    try:
+        return {**opened, "objects": list_objects(project_id)["objects"], "description": describe_project(project_id)}
+    except BaseException as exc:
+        _auto_close_internal_project(project_id, exc)
+        closed = True
+        raise
+    finally:
+        if not closed:
+            _auto_close_internal_project(project_id)
 
 
 def create_tiny_smoke_project(path: str, overwrite: bool = False) -> dict[str, Any]:
     opened = new_project()
     project_id = opened["project_id"]
-    add_fdtd_region(project_id, "FDTD", {"x span": 1e-6, "y span": 1e-6, "z span": 1e-6, "mesh accuracy": 1})
-    add_rectangle(project_id, "block", {"x span": 2e-7, "y span": 2e-7, "z span": 2e-7, "material": "Si (Silicon) - Palik"})
-    add_dipole_source(project_id, "source", {"wavelength start": 4e-7, "wavelength stop": 7e-7})
-    add_power_monitor(project_id, "T_monitor", {"monitor type": "2D Z-normal"})
-    saved = save_project_as(project_id, path, overwrite=overwrite)
-    objects = list_objects(project_id)["objects"]
-    return {
-        **opened,
-        **saved,
-        "objects": objects,
-        "description": describe_project(project_id),
-        "warnings": [
-            "Tiny smoke project is not a production OLED/FDTD template; it only verifies authoring, save, inspect, and run plumbing.",
-            "Material names can be installation-dependent in real Lumerical environments.",
-        ],
-    }
+    closed = False
+    try:
+        add_fdtd_region(project_id, "FDTD", {"x span": 1e-6, "y span": 1e-6, "z span": 1e-6, "mesh accuracy": 1})
+        add_rectangle(project_id, "block", {"x span": 2e-7, "y span": 2e-7, "z span": 2e-7, "material": "Si (Silicon) - Palik"})
+        add_dipole_source(project_id, "source", {"wavelength start": 4e-7, "wavelength stop": 7e-7})
+        add_power_monitor(project_id, "T_monitor", {"monitor type": "2D Z-normal"})
+        saved = save_project_as(project_id, path, overwrite=overwrite)
+        objects = list_objects(project_id)["objects"]
+        return {
+            **opened,
+            **saved,
+            "objects": objects,
+            "description": describe_project(project_id),
+            "warnings": [
+                "Tiny smoke project is not a production OLED/FDTD template; it only verifies authoring, save, inspect, and run plumbing.",
+                "Material names can be installation-dependent in real Lumerical environments.",
+            ],
+        }
+    except BaseException as exc:
+        _auto_close_internal_project(project_id, exc)
+        closed = True
+        raise
+    finally:
+        if not closed:
+            _auto_close_internal_project(project_id)
 
 
 def run_tiny_smoke_project(path: str, timeout_sec: int = 120) -> dict[str, Any]:
     opened = open_fsp(path, readonly=False)
-    run = run_simulation(opened["project_id"], timeout_sec=timeout_sec)
-    result = get_monitor_result(opened["project_id"], "T_monitor", "T")
-    return {**opened, "run": run, "result": result}
+    project_id = opened["project_id"]
+    closed = False
+    try:
+        run = run_simulation(project_id, timeout_sec=timeout_sec)
+        result = get_monitor_result(project_id, "T_monitor", "T")
+        return {**opened, "run": run, "result": result}
+    except BaseException as exc:
+        _auto_close_internal_project(project_id, exc)
+        closed = True
+        raise
+    finally:
+        if not closed:
+            _auto_close_internal_project(project_id)
 
 
 def create_run_dir(base_fsp: str, run_name: str) -> dict[str, Any]:
@@ -205,6 +276,16 @@ def propose_experiment_plan(base_fsp: str, run_name: str, object_name: str, prop
     return {"dry_run": True, "plan_id": f"plan_{Path(base_fsp).stem}_{run_name}", "base_fsp": base_fsp, "run_name": run_name, "approved_changes": [{"object_name": object_name, "property_name": property_name, "allowed_values": values}], "monitor_name": monitor_name, "result_name": result_name, "will_create_run_dir": True}
 
 
+def close_project(project_id: str) -> dict[str, Any]:
+    """Close an open project by project_id to release the backing Lumerical session/license."""
+    return _ADAPTER.close_project(project_id)
+
+
+def close(session_id: str) -> dict[str, Any]:
+    """Close open project sessions by legacy session_id."""
+    return _ADAPTER.close(session_id)
+
+
 def validate_experiment_plan(plan: dict[str, Any]) -> dict[str, Any]:
     missing=[k for k in ["base_fsp","run_name","approved_changes","monitor_name","result_name"] if k not in plan]
     if missing: return {"ok": False, "errors": [f"missing {k}" for k in missing]}
@@ -225,20 +306,30 @@ def run_parameter_sweep(base_fsp: str, run_name: str, object_name: str, property
     before=sha256_file(base_fsp)
     run=create_run_dir(base_fsp, run_name)
     opened=open_fsp(run["working_fsp"], readonly=False)
-    rows=[]
-    for i,value in enumerate(values, start=1):
-        change=set_object_property(opened["project_id"], object_name, property_name, value, run_id=run["run_id"])
-        status=run_simulation(opened["project_id"], run_id=run["run_id"])["status"]
-        result=get_monitor_result(opened["project_id"], monitor_name, result_name)
-        _require_normalized_monitor_result(result)
-        wavelengths=result["axes"]["wavelength_m"]["values"]
-        for wl,rv in zip(wavelengths, result["values"]):
-            rows.append({"run_id": run["run_id"], "case_id": f"case_{i:04d}", "object": object_name, "property": property_name, "value": value, "monitor": monitor_name, "result": result_name, "wavelength_m": wl, "result_value": rv, "status": status})
-    csv_path=str(Path(run["run_dir"])/"results"/"results.csv")
-    summary_path=str(Path(run["run_dir"])/"summary.md")
-    csv_info=export_monitor_csv(rows, csv_path)
-    summary=generate_summary(summary_path, run_id=run["run_id"], parameter={"object": object_name, "property": property_name, "values": values}, result_rows=rows)
-    after=sha256_file(base_fsp)
-    if before != after:
-        raise RuntimeError("safety violation: base .fsp checksum changed")
-    return {"run_id": run["run_id"], "run_dir": run["run_dir"], "working_fsp": run["working_fsp"], "results_csv": csv_info["path"], "summary_md": summary["path"], "provenance_json": run["provenance_path"], "rows": len(rows), "base_checksum_unchanged": True}
+    project_id = opened["project_id"]
+    closed = False
+    try:
+        rows=[]
+        for i,value in enumerate(values, start=1):
+            change=set_object_property(project_id, object_name, property_name, value, run_id=run["run_id"])
+            status=run_simulation(project_id, run_id=run["run_id"])["status"]
+            result=get_monitor_result(project_id, monitor_name, result_name)
+            _require_normalized_monitor_result(result)
+            wavelengths=result["axes"]["wavelength_m"]["values"]
+            for wl,rv in zip(wavelengths, result["values"]):
+                rows.append({"run_id": run["run_id"], "case_id": f"case_{i:04d}", "object": object_name, "property": property_name, "value": value, "monitor": monitor_name, "result": result_name, "wavelength_m": wl, "result_value": rv, "status": status})
+        csv_path=str(Path(run["run_dir"])/"results"/"results.csv")
+        summary_path=str(Path(run["run_dir"])/"summary.md")
+        csv_info=export_monitor_csv(rows, csv_path)
+        summary=generate_summary(summary_path, run_id=run["run_id"], parameter={"object": object_name, "property": property_name, "values": values}, result_rows=rows)
+        after=sha256_file(base_fsp)
+        if before != after:
+            raise RuntimeError("safety violation: base .fsp checksum changed")
+        return {"run_id": run["run_id"], "run_dir": run["run_dir"], "working_fsp": run["working_fsp"], "results_csv": csv_info["path"], "summary_md": summary["path"], "provenance_json": run["provenance_path"], "rows": len(rows), "base_checksum_unchanged": True}
+    except BaseException as exc:
+        _auto_close_internal_project(project_id, exc)
+        closed = True
+        raise
+    finally:
+        if not closed:
+            _auto_close_internal_project(project_id)

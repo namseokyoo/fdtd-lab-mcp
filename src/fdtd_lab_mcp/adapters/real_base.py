@@ -116,17 +116,56 @@ class ScriptSessionAdapter:
         self._project(project_id)["path"] = safe_path
         return {"project_id": project_id, "path": safe_path, "saved": True, "adapter": self.name}
 
+    def _call_session_method(self, project_id: str, method: str, *args: Any, phase: str = "session_method") -> Any:
+        try:
+            fn = getattr(self._session(project_id), method)
+        except AttributeError as exc:  # pragma: no cover - requires real Lumerical
+            raise AdapterUnavailable(
+                f"Lumerical session does not expose method={method!r} during phase={phase} ({self._context(project_id)})"
+            ) from exc
+        try:
+            return fn(*args)
+        except Exception as exc:  # pragma: no cover - requires real Lumerical
+            formatted_args = ", ".join(repr(arg) for arg in args)
+            raise AdapterUnavailable(
+                f"Lumerical method call failed during phase={phase} ({self._context(project_id)}) "
+                f"method={method} args=({formatted_args}): {exc}"
+            ) from exc
+
+    def _switch_to_layout(self, project_id: str, *, phase: str) -> None:
+        self._call_session_method(project_id, "switchtolayout", phase=f"{phase}:switchtolayout")
+
+    def _get_named_property(self, project_id: str, object_name: str, property_name: str, *, phase: str) -> Any:
+        return self._call_session_method(
+            project_id,
+            "getnamed",
+            object_name,
+            property_name,
+            phase=f"{phase}:getnamed:{object_name}:{property_name}",
+        )
+
+    def _set_named_property(self, project_id: str, object_name: str, property_name: str, value: Any, *, phase: str) -> None:
+        self._call_session_method(
+            project_id,
+            "setnamed",
+            object_name,
+            property_name,
+            value,
+            phase=f"{phase}:setnamed:{object_name}:{property_name}",
+        )
+
     def _set_properties(self, project_id: str, properties: dict[str, Any], *, phase: str) -> None:
         for prop, value in validate_properties(properties).items():
-            self._putv(project_id, "fdtd_lab_new_value", value, phase=f"{phase}:put_property_value")
-            self._eval(project_id, f"set({lsf_quote(prop)}, fdtd_lab_new_value);", phase=f"{phase}:set_property:{prop}")
+            self._call_session_method(project_id, "set", prop, value, phase=f"{phase}:set:{prop}")
 
     def _add_object(self, project_id: str, name: str, command: str, object_type: str, properties: dict[str, Any] | None = None) -> dict[str, Any]:
         self._require_writable(project_id, f"add_{object_type}")
         safe_name = validate_object_name(name)
         props = validate_properties(properties)
         phase = f"add_object:{object_type}"
-        self._eval(project_id, f"{command}; set({lsf_quote('name')}, {lsf_quote(safe_name)});", phase=phase)
+        self._switch_to_layout(project_id, phase=phase)
+        self._call_session_method(project_id, command, phase=f"{phase}:{command}")
+        self._call_session_method(project_id, "set", "name", safe_name, phase=f"{phase}:set:name")
         self._set_properties(project_id, props, phase=phase)
         return {"project_id": project_id, "object_name": safe_name, "object_type": object_type, "properties": props, "adapter": self.name}
 
@@ -236,18 +275,22 @@ class ScriptSessionAdapter:
     def get_property(self, project_id: str, object_name: str, property_name: str) -> dict[str, Any]:
         safe_name = validate_object_name(object_name)
         safe_property = validate_property_name(property_name)
-        var = "fdtd_lab_property_value"
-        self._eval(project_id, f"select({lsf_quote(safe_name)}); {var}=get({lsf_quote(safe_property)});", phase="get_property")
-        return {"object_name": safe_name, "property_name": safe_property, "value": _json_safe(self._getv(project_id, var, phase="get_property:value")), "unit_guess": "m" if "span" in safe_property or "wavelength" in safe_property else None}
+        value = self._get_named_property(project_id, safe_name, safe_property, phase="get_property")
+        return {
+            "object_name": safe_name,
+            "property_name": safe_property,
+            "value": _json_safe(value),
+            "unit_guess": "m" if "span" in safe_property or "wavelength" in safe_property else None,
+        }
 
     def set_property(self, project_id: str, object_name: str, property_name: str, value: Any) -> dict[str, Any]:
         self._require_writable(project_id, "set_property")
         safe_name = validate_object_name(object_name)
         safe_property = validate_property_name(property_name)
-        before = self.get_property(project_id, safe_name, safe_property)["value"]
-        self._putv(project_id, "fdtd_lab_new_value", value, phase="set_property:put_value")
-        self._eval(project_id, f"select({lsf_quote(safe_name)}); set({lsf_quote(safe_property)}, fdtd_lab_new_value);", phase="set_property")
-        after = self.get_property(project_id, safe_name, safe_property)["value"]
+        before = _json_safe(self._get_named_property(project_id, safe_name, safe_property, phase="set_property:before"))
+        self._switch_to_layout(project_id, phase="set_property")
+        self._set_named_property(project_id, safe_name, safe_property, value, phase="set_property")
+        after = _json_safe(self._get_named_property(project_id, safe_name, safe_property, phase="set_property:after"))
         return {"object_name": safe_name, "property_name": safe_property, "before": before, "after": after}
 
     def run(self, project_id: str, timeout_sec: int = 3600) -> dict[str, Any]:
@@ -278,13 +321,20 @@ class ScriptSessionAdapter:
             "warnings": ["Raw un-normalized real-adapter result returned; schema normalization requires first company-local sample .fsp."],
         }
 
+    def close_project(self, project_id: str) -> dict[str, Any]:
+        record = self._project(project_id)
+        session_id = record["session_id"]
+        try:
+            logger.info("Closing Lumerical project adapter=%s project_id=%s session_id=%s", self.name, project_id, session_id)
+            record["session"].close()
+        finally:
+            del self.projects[project_id]
+        return {"project_id": project_id, "session_id": session_id, "closed": True, "adapter": self.name}
+
     def close(self, session_id: str) -> dict[str, Any]:
+        closed_projects = []
         for project_id, record in list(self.projects.items()):
             if record["session_id"] != session_id:
                 continue
-            try:
-                logger.info("Closing Lumerical session adapter=%s session_id=%s project_id=%s", self.name, session_id, project_id)
-                record["session"].close()
-            finally:
-                del self.projects[project_id]
-        return {"closed": True, "session_id": session_id}
+            closed_projects.append(self.close_project(project_id)["project_id"])
+        return {"closed": True, "session_id": session_id, "project_ids": closed_projects, "adapter": self.name}

@@ -15,6 +15,7 @@ Ansys Lumerical FDTD `.fsp` 파일을 MCP 도구로 다루기 위한 서버입�
 - result CSV export
 - blank project 생성
 - 최소 FDTD authoring smoke project 생성
+- 실제 Lumerical application/license 해제를 위한 project/session handle 종료 지원
 - `fake`, `ansys_core`, `lumapi` adapter 지원
 
 ## Adapter
@@ -40,7 +41,7 @@ python -m pytest
 예상 결과:
 
 ```text
-25 passed, 1 skipped
+39 passed, 1 skipped
 ```
 
 ## MCP 서버 실행
@@ -73,6 +74,7 @@ fdtd-lab-mcp
 
 | Tool | 설명 |
 | --- | --- |
+| `server_info` | server/version metadata와 adapter gate 정보 확인 |
 | `active_adapter` | 현재 adapter 확인 |
 | `reset_state` | adapter/state 초기화 |
 | `lumerical_status` | adapter 감지 상태 확인 |
@@ -81,8 +83,8 @@ fdtd-lab-mcp
 
 | Tool | 설명 |
 | --- | --- |
-| `open_fsp` | `.fsp` 열기 |
-| `inspect_fsp` | `.fsp` 열기 + object/description 조회 |
+| `open_fsp` | `.fsp` 열기; 호출자가 `close_project(project_id)`로 닫아야 함 |
+| `inspect_fsp` | `.fsp`를 열어 object/description을 조회한 뒤 자동 close |
 | `list_objects` | object 목록 조회 |
 | `list_properties` | object property 목록 조회 |
 | `get_object_property` | property 값 조회 |
@@ -96,24 +98,32 @@ fdtd-lab-mcp
 | `create_run_dir` | 원본 `.fsp` 복사본과 provenance 생성 |
 | `propose_experiment_plan` | sweep 계획 생성 |
 | `validate_experiment_plan` | sweep 계획 검증 |
-| `run_parameter_sweep` | parameter sweep 실행 |
+| `run_parameter_sweep` | working copy에서 parameter sweep을 한 번 실행하고 내부 project 자동 close |
 | `run_simulation` | simulation 실행 |
 | `get_monitor_result` | monitor result 조회 |
 | `export_csv` | CSV export |
+| `close_project` | `project_id`로 열린 project를 닫고 Lumerical session/license 해제 |
+| `close` | 기존 `session_id` 기반 close |
 
 ### Authoring
 
 | Tool | 설명 |
 | --- | --- |
-| `new_project` | blank project 생성 |
+| `new_project` | blank project 생성; 호출자가 `close_project(project_id)`로 닫아야 함 |
 | `save_project_as` | `.fsp` 저장 |
 | `add_fdtd_region` | FDTD region 추가 |
 | `add_rectangle` | rectangle/structure 추가 |
 | `add_dipole_source` | dipole source 추가 |
 | `add_power_monitor` | power monitor 추가 |
 | `delete_object` | object 삭제 |
-| `create_tiny_smoke_project` | 최소 smoke `.fsp` 생성 |
-| `run_tiny_smoke_project` | smoke `.fsp` 실행 경로 확인 |
+| `create_tiny_smoke_project` | 최소 smoke `.fsp`를 생성/저장한 뒤 자동 close |
+| `run_tiny_smoke_project` | smoke `.fsp`를 열어 실행/조회한 뒤 자동 close |
+
+## Project lifecycle 계약
+
+- `open_fsp()`와 `new_project()`는 낮은 수준의 handle 생성 API입니다. 의도적으로 project/session을 열린 상태로 두고 `project_id`를 반환하므로, 실제 Lumerical adapter에서는 GUI process와 license 해제를 위해 호출자가 작업 후 `close_project(project_id)`를 실행해야 합니다.
+- 내부에서 project를 열거나 생성하는 one-shot high-level helper는 결과를 수집한 뒤 내부 project를 자동으로 닫습니다: `inspect_fsp()`, `create_tiny_smoke_project()`, `run_tiny_smoke_project()`, `run_parameter_sweep()`. 실패 시에도 원래 예외를 가리지 않고 cleanup을 시도합니다.
+- `close(session_id)`는 legacy session-id cleanup 용도로 유지되지만, lifecycle API는 `close_project(project_id)`를 권장합니다.
 
 ## 기본 사용 예시
 
@@ -141,6 +151,9 @@ before_after = tools.set_object_property(
     value=4e-8,
 )
 print(before_after)
+
+# 실제 adapter에서는 작업 후 FDTD app/license 해제를 위해 닫습니다.
+tools.close_project(project_id)
 ```
 
 ### 3. parameter sweep
@@ -221,6 +234,14 @@ export FDTD_LAB_ENABLE_REAL_LUMERICAL=1
 export FDTD_LAB_SAMPLE_FSP=/path/to/non-sensitive-sample.fsp
 python -m fdtd_lab_mcp.integration_probe --adapter ansys_core --open --list
 ```
+
+수동 mutation/session-close smoke:
+
+1. 쓰기 가능한 non-sensitive project를 `open_fsp(path, readonly=False)`로 엽니다.
+2. `set_object_property(project_id, "FDTD", "x span", <new span>)`를 실행합니다.
+3. `run_simulation(project_id)`를 실행합니다.
+4. `close_project(project_id)`를 실행합니다.
+5. system tray/task manager에서 FDTD app 종료와 license 해제를 확인합니다.
 
 Authoring smoke 검증:
 

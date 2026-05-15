@@ -107,41 +107,88 @@ def test_eval_error_includes_phase_context_and_sanitized_snippet():
     assert len(message) < 700
 
 
-def test_real_adapter_quotes_names_and_property_paths():
+def test_real_set_property_uses_documented_named_methods_not_raw_eval():
     class RecordingSession:
         def __init__(self):
-            self.vars = {"fdtd_lab_property_value": 1}
+            self.calls = []
             self.scripts = []
+            self.values = {("valid object", "x span"): 1}
 
         def eval(self, script):
             self.scripts.append(script)
-            if "getresult" in script:
-                self.vars["fdtd_lab_result"] = {"T": [1]}
 
-        def getv(self, name):
-            return self.vars[name]
+        def switchtolayout(self):
+            self.calls.append(("switchtolayout",))
 
-        def putv(self, name, value):
-            self.vars[name] = value
+        def getnamed(self, object_name, property_name):
+            self.calls.append(("getnamed", object_name, property_name))
+            return self.values[(object_name, property_name)]
+
+        def setnamed(self, object_name, property_name, value):
+            self.calls.append(("setnamed", object_name, property_name, value))
+            self.values[(object_name, property_name)] = value
+
+    adapter = ScriptSessionAdapter()
+    session = RecordingSession()
+    adapter.projects["project-1"] = {"session_id": "session-1", "session": session, "path": "sample.fsp", "readonly": False}
+
+    result = adapter.set_property("project-1", "valid object", "x span", 2)
+
+    assert result == {"object_name": "valid object", "property_name": "x span", "before": 1, "after": 2}
+    assert session.calls == [
+        ("getnamed", "valid object", "x span"),
+        ("switchtolayout",),
+        ("setnamed", "valid object", "x span", 2),
+        ("getnamed", "valid object", "x span"),
+    ]
+    assert session.scripts == []
+
+
+def test_real_get_property_uses_getnamed_and_validates_paths():
+    class RecordingSession:
+        def __init__(self):
+            self.calls = []
+
+        def getnamed(self, object_name, property_name):
+            self.calls.append(("getnamed", object_name, property_name))
+            return 1
 
     adapter = ScriptSessionAdapter()
     session = RecordingSession()
     adapter.projects["project-1"] = {"session_id": "session-1", "session": session, "path": "sample.fsp", "readonly": False}
 
     adapter.get_property("project-1", "valid object", "x span")
-    adapter.set_property("project-1", "valid object", "x span", 2)
-    adapter.get_monitor_result("project-1", "T monitor", "T")
 
-    joined = "\n".join(session.scripts)
-    assert 'select("valid object")' in joined
-    assert 'get("x span")' in joined
-    assert 'set("x span", fdtd_lab_new_value)' in joined
-    assert 'getresult("T monitor", "T")' in joined
-
+    assert session.calls == [("getnamed", "valid object", "x span")]
     with pytest.raises(Exception, match="unsafe object name"):
         adapter.get_property("project-1", 'bad";delete;', "x span")
     with pytest.raises(Exception, match="unsafe property name"):
         adapter.get_property("project-1", "valid object", 'x";delete;')
+
+
+def test_real_set_property_error_includes_method_phase_object_property():
+    class FailingSession:
+        def getnamed(self, object_name, property_name):
+            return 1
+
+        def switchtolayout(self):
+            pass
+
+        def setnamed(self, object_name, property_name, value):
+            raise RuntimeError("underlying LumApiError text")
+
+    adapter = ScriptSessionAdapter()
+    adapter.projects["project-1"] = {"session_id": "session-1", "session": FailingSession(), "path": "sample.fsp", "readonly": False}
+
+    with pytest.raises(AdapterUnavailable) as exc:
+        adapter.set_property("project-1", "FDTD", "x span", 2)
+
+    message = str(exc.value)
+    assert "phase=set_property:setnamed:FDTD:x span" in message
+    assert "method=setnamed" in message
+    assert "FDTD" in message
+    assert "x span" in message
+    assert "underlying LumApiError text" in message
 
 
 def test_real_list_properties_returns_unverified_static_candidates():
